@@ -65,12 +65,14 @@ function cloneGitHubRepo() {
 function addMercurialUpstream() {
   cd "$WORKSPACE/$GITHUB_REPO" || exit 1
 
-  git fetch origin
+  git fetch --all
   if ! git checkout -f "$BRANCH" ; then
     git checkout -b "$BRANCH" origin/"$BRANCH" || exit 1
   else
     git reset --hard origin/"$BRANCH" || echo "Not resetting as no upstream exists"
   fi
+
+  git pull origin "$BRANCH"
 
   # shellcheck disable=SC2143
   if [ -z "$(git remote -v | grep 'hg')" ] ; then
