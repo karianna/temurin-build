@@ -86,6 +86,12 @@ function addMercurialUpstream() {
 function performMergeFromMercurialIntoGit() {
   git fetch hg
   git merge hg/"$BRANCH" -m "Merge $BRANCH" || (echo "The automatic update failed, time for manual intervention!" && exit 1)
+
+
+  echo "====Commit diff for branch $BRANCH===="
+  git log --graph --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr)%Creset' --abbrev-commit --date=relative $BRANCH..origin/$BRANCH
+  echo "======================================"
+
   git push origin "$BRANCH" --tags || exit 1
 }
 
@@ -93,6 +99,7 @@ function performMergeFromMercurialIntoGit() {
 # dev contains patches that AdoptOpenJDK has beyond upstream OpenJDK
 function performMergeIntoDevFromMaster() {
 
+  git fetch --all
   if ! git checkout -f dev ; then
     if ! git rev-parse -q --verify "origin/dev" ; then
       git checkout -b dev || exit 1
@@ -103,10 +110,18 @@ function performMergeIntoDevFromMaster() {
     git reset --hard origin/dev || echo "Not resetting as no upstream exists"
   fi
 
-  git rebase -p master || exit 1
-  if "git rev-parse -q --verify origin/dev" ; then
+  git rebase --abort || true
+  git branch -D dev-tmp || true
+  git checkout -b dev-tmp master
+  git rebase -p dev || exit 1
+  git checkout dev
+  git rebase -p dev-tmp || exit 1
+  git branch -D dev-tmp || true
+
+  if git rev-parse -q --verify "origin/dev" ; then
     git log --oneline origin/dev..dev
   fi
+
   git push origin dev || exit 1
 }
 
