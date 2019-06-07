@@ -55,7 +55,18 @@ def buildConfigurations = [
                         corretto: 'win2008',
                         openj9  : 'win2012&&mingw-cygwin'
                 ],
+                buildArgs : [
+                        hotspot : '--jvm-variant client,server'
+                ],
                 test                : ['openjdktest', 'systemtest']
+        ],
+
+        x64WindowsXL    : [
+                os                   : 'windows',
+                arch                 : 'x64',
+                additionalNodeLabels : 'win2012&&mingw-cygwin',
+                test                 : ['openjdktest', 'systemtest'],
+                configureArgs        : '--with-noncompressedrefs'
         ],
 
         x32Windows    : [
