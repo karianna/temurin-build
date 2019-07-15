@@ -157,7 +157,7 @@ configuringVersionStringParameter()
   echo "OpenJDK repo tag is ${openJdkVersion}"
 
   # --with-milestone=fcs deprecated at jdk11, removed at jdk12
-  if [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" != "${JDK12_CORE_VERSION}" ] && [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" != "${JDKHEAD_CORE_VERSION}" ]; then
+  if [ "${BUILD_CONFIG[OPENJDK_FEATURE_NUMBER]}" -lt 12 ]; then
     addConfigureArg "--with-milestone=" "fcs"
   fi
 
@@ -209,7 +209,8 @@ configuringVersionStringParameter()
     # Set the build number (e.g. b04), this gets passed in from the calling script
     local buildNumber=${BUILD_CONFIG[OPENJDK_BUILD_NUMBER]}
     if [ -z "${buildNumber}" ]; then
-      buildNumber=$(echo "${openJdkVersion}" | cut -f2 -d"+")
+      # Get build number (eg.10) from tag of potential format "jdk-11.0.4+10_adopt"
+      buildNumber=$(echo "${openJdkVersion}" | cut -d_ -f1 | cut -f2 -d"+")
     fi
 
     if [ "${BUILD_CONFIG[RELEASE]}" == "false" ]; then
@@ -407,6 +408,7 @@ getGradleHome() {
 
 buildSharedLibs() {
     cd "${LIB_DIR}"
+
     local gradleJavaHome=$(getGradleHome)
     echo "Running gradle with $gradleJavaHome"
 
@@ -424,6 +426,7 @@ parseJavaVersionString() {
   cd "${LIB_DIR}"
   local gradleJavaHome=$(getGradleHome)
   local version=$(echo "$javaVersion" | JAVA_HOME="$gradleJavaHome" "$gradleJavaHome"/bin/java -cp "target/libs/adopt-shared-lib.jar" ParseVersion -s -f openjdk-semver $ADOPT_BUILD_NUMBER | tr -d '\n')
+
   echo $version
 }
 

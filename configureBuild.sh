@@ -117,24 +117,7 @@ setVariablesForConfigure() {
 
   local openjdk_core_version=${BUILD_CONFIG[OPENJDK_CORE_VERSION]}
 
-  # TODO Regex this in the if or use cut to grab out the number and see if >= 9
-  # TODO 9 should become 9u as will 10 shortly....
-  if [ "$openjdk_core_version" == "${JDK9_CORE_VERSION}" ] || \
-    [ "$openjdk_core_version" == "${JDK10_CORE_VERSION}" ] || \
-    [ "$openjdk_core_version" == "${JDK11_CORE_VERSION}" ] || \
-    [ "$openjdk_core_version" == "${JDK12_CORE_VERSION}" ] || \
-    [ "$openjdk_core_version" == "${AMBER_CORE_VERSION}" ] || \
-    [ "$openjdk_core_version" == "${JDKHEAD_CORE_VERSION}" ]; then
-    local jdk_path="jdk"
-    local jre_path="jre"
-    case "${BUILD_CONFIG[OS_KERNEL_NAME]}" in
-    "darwin")
-      local jdk_path="jdk-bundle/jdk-*.jdk"
-      local jre_path="jre-bundle/jre-*.jre"
-    ;;
-    esac
-    #BUILD_CONFIG[CONFIGURE_ARGS_FOR_ANY_PLATFORM]=${BUILD_CONFIG[CONFIGURE_ARGS_FOR_ANY_PLATFORM]:-"--disable-warnings-as-errors"}
-  elif [ "$openjdk_core_version" == "${JDK8_CORE_VERSION}" ]; then
+  if [ "$openjdk_core_version" == "${JDK8_CORE_VERSION}" ]; then
     local jdk_path="j2sdk-image"
     local jre_path="j2re-image"
     case "${BUILD_CONFIG[OS_KERNEL_NAME]}" in
@@ -144,8 +127,14 @@ setVariablesForConfigure() {
     ;;
     esac
   else
-    echo "Please specify a version, either jdk8u, jdk9, jdk10, amber etc, with or without a 'u' suffix. e.g. $0 [options] jdk8u"
-    exit 1
+    local jdk_path="jdk"
+    local jre_path="jre"
+    case "${BUILD_CONFIG[OS_KERNEL_NAME]}" in
+    "darwin")
+      local jdk_path="jdk-bundle/jdk-*.jdk"
+      local jre_path="jre-bundle/jre-*.jre"
+    ;;
+    esac
   fi
 
   BUILD_CONFIG[JDK_PATH]=$jdk_path
@@ -210,8 +199,7 @@ processArgumentsforSpecificArchitectures() {
       jvm_variant=server
     fi
 
-    if [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK12_CORE_VERSION}" ] || \
-      [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDKHEAD_CORE_VERSION}" ]; then
+    if [ "${BUILD_CONFIG[OPENJDK_FEATURE_NUMBER]}" -ge 12 ]; then
       build_full_name=linux-s390x-${jvm_variant}-release
     else
       build_full_name=linux-s390x-normal-${jvm_variant}-release

@@ -5,6 +5,7 @@ set -exu
 source constants.sh
 
 acceptUpstream="false"
+doRebuildLocalRepo="false"
 doInit="false"
 doReset="false"
 doTagging="false"
@@ -22,8 +23,7 @@ function initRepo() {
   git clone $MIRROR/root/ .
   git checkout master
   git reset --hard "$tag"
-  git remote add "upstream" git@github.com:AdoptOpenJDK/openjdk-jdk8u.git
-  git remote add "root" "$MIRROR/root/"
+  addRemotes
 
   for module in "${MODULES[@]}" ; do
       cd "$MIRROR/$module/";
@@ -38,6 +38,21 @@ function initRepo() {
     git tag -d $tag || true
   done
 
+  git fetch upstream --tags
+}
+
+function addRemotes() {
+
+  cd "$REPO"
+  if ! git config remote.upstream.url > /dev/null; then
+    git remote add "upstream" $UPSTREAM_GIT_REPO
+  fi
+
+  if ! git config remote.root.url > /dev/null; then
+    git remote add "root" "$MIRROR/root/"
+  fi
+
+  git fetch --all
   git fetch upstream --tags
 }
 
@@ -97,6 +112,44 @@ function updateRepo() {
 
 }
 
+# Builds a local repo on a new machine by pulling down the existing remote repo
+function rebuildLocalRepo() {
+    hgRepo=$1
+
+    # Steps required to build a new host
+    #
+    # 1. Clone upstream mirrors (done by updateMirrors function)
+    #
+    # 2. Pull adopt repo down into $REPO
+    #
+    # 3. Set up remotes on $REPO
+    #     Remotes should look as follows:
+    #       upstream: git@github.com:AdoptOpenJDK/openjdk-jdk8u.git (or aarch)
+    #       root:    "$MIRROR/root/"
+    #       origin:  "$MIRROR/root/"
+    #
+
+    # Step 1 Clone mirrors
+    updateMirrors $hgRepo
+
+    # Step 2, Reclone upstream repo
+    rm -rf "$REPO" || true
+    mkdir -p "$REPO"
+    cd "$REPO"
+    git clone $UPSTREAM_GIT_REPO .
+    git checkout master
+
+    # Step 3 Setup remotes
+    addRemotes
+
+    # Repoint origin from the upstream repo to root module
+    cd "$REPO"
+    git remote set-url origin "$MIRROR/root/"
+
+    git fetch --all
+    git fetch --tags
+}
+
 # We pass in the repo we want to mirror as the first arg
 function updateMirrors() {
 
@@ -118,7 +171,7 @@ function fixAutoConfigure() {
     git commit -a --no-edit
 }
 
-while getopts "ab:irts:T:u" opt; do
+while getopts "ab:irtls:T:u" opt; do
     case "${opt}" in
         a)
             acceptUpstream="true"
@@ -132,6 +185,9 @@ while getopts "ab:irts:T:u" opt; do
         r)
             doReset="true"
             doInit="true"
+            ;;
+        l)
+            doRebuildLocalRepo="true"
             ;;
         s)
             hgRepo=${OPTARG}
@@ -152,6 +208,11 @@ while getopts "ab:irts:T:u" opt; do
     esac
 done
 shift $((OPTIND-1))
+
+if [ "$doRebuildLocalRepo" == "true" ]; then
+    rebuildLocalRepo $hgRepo
+    exit
+fi
 
 if [ "$doUpdate" == "true" ]; then
   updateMirrors $hgRepo
@@ -241,3 +302,4 @@ done
 
 git prune
 git gc
+

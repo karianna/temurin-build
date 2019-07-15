@@ -1,5 +1,3 @@
-package groovy.common
-
 /*
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -15,133 +13,135 @@ limitations under the License.
 */
 
 def buildConfigurations = [
-        x64Mac        : [
+        x64Mac    : [
                 os                  : 'mac',
                 arch                : 'x64',
-                additionalNodeLabels: [
-                        hotspot : 'build-macstadium-macos1010-1',
-                        corretto: 'build-macstadium-macos1010-1',
-                        openj9  : 'build-macstadium-macos1010-2'
-                ],
-                test                : ['sanity.openjdk', 'sanity.system']
+                additionalNodeLabels : 'macos10.12',
+                test                : ['openjdktest', 'systemtest', 'perftest']
         ],
 
-        x64MacXL      : [
+        x64MacXL    : [
                 os                   : 'mac',
                 arch                 : 'x64',
-                additionalNodeLabels : 'build-macstadium-macos1010-2',
-                test                 : ['sanity.openjdk', 'sanity.system', 'sanity.perf'],
+                additionalNodeLabels : 'macos10.12',
+                test                 : ['openjdktest', 'systemtest', 'perftest'],
                 additionalFileNameTag: "macosXL",
                 configureArgs        : '--with-noncompressedrefs'
         ],
 
-        x64Linux      : [
+        x64Linux  : [
                 os                  : 'linux',
                 arch                : 'x64',
-                additionalNodeLabels: [
-                        hotspot : 'centos6',
-                        corretto: 'centos6',
-                        openj9  : 'build-joyent-centos69-x64-1'
+                additionalNodeLabels: 'centos6',
+                test                : [
+                        nightly: ['openjdktest', 'systemtest', 'perftest', 'externaltest'],
+                        release: ['openjdktest', 'systemtest', 'perftest', 'externaltest']
                 ],
-                test                : ['sanity.openjdk', 'sanity.system', 'sanity.perf', 'sanity.external']
+                configureArgs        : '--disable-ccache'
         ],
 
         // Currently we have to be quite specific about which windows to use as not all of them have freetype installed
-        x64Windows    : [
+        x64Windows: [
                 os                  : 'windows',
                 arch                : 'x64',
                 additionalNodeLabels: [
-                        hotspot : 'win2008',
-                        corretto: 'win2008',
-                        openj9  : 'win2012&&mingw-cygwin'
+                        hotspot: 'win2012&&vs2017',
+                        openj9:  'win2012&&vs2017'
                 ],
-                test                : ['sanity.openjdk', 'sanity.system']
+                buildArgs : [
+                        hotspot : '--jvm-variant client,server'
+                ],
+                test                : ['openjdktest', 'perftest', 'systemtest']
         ],
 
         x64WindowsXL    : [
                 os                   : 'windows',
                 arch                 : 'x64',
-                additionalNodeLabels : 'win2012&&mingw-cygwin',
-                test                 : ['sanity.openjdk', 'sanity.system'],
+                additionalNodeLabels : 'win2012&&vs2017',
+                test                 : ['openjdktest', 'perftest', 'systemtest'],
                 additionalFileNameTag: "windowsXL",
                 configureArgs        : '--with-noncompressedrefs'
         ],
 
-        x32Windows    : [
+        x32Windows: [
                 os                  : 'windows',
                 arch                : 'x86-32',
                 additionalNodeLabels: [
-                        hotspot : 'win2008',
-                        corretto: 'win2008',
-                        openj9  : 'win2012&&mingw-cygwin'
+                        hotspot: 'win2012&&vs2017',
+                        openj9:  'win2012&&mingw-standalone'
                 ],
                 buildArgs : [
                         hotspot : '--jvm-variant client,server'
                 ],
-                test                : ['sanity.openjdk']
+                test                : ['openjdktest']
         ],
 
-        ppc64Aix      : [
-                os  : 'aix',
-                arch: 'ppc64',
-                test: [
+        ppc64Aix    : [
+                os                  : 'aix',
+                arch                : 'ppc64',
+                test                : [
                         nightly: false,
-                        release: ['sanity.openjdk', 'sanity.system']
+                        release: ['openjdktest', 'systemtest']
                 ]
         ],
 
         s390xLinux    : [
-                os  : 'linux',
-                arch: 's390x',
-                test: ['sanity.openjdk', 'sanity.system']
+                os                  : 'linux',
+                arch                : 's390x',
+                test                : ['openjdktest', 'systemtest', 'perftest'],
+                configureArgs        : '--disable-ccache'
         ],
 
-        sparcv9Solaris: [
-                os  : 'solaris',
-                arch: 'sparcv9',
-                test: false
-        ],
-
-        x64Solaris    : [
+        sparcv9Solaris    : [
                 os                  : 'solaris',
-                arch                : 'x64',
+                arch                : 'sparcv9',
                 test                : false
         ],
 
-        ppc64leLinux  : [
-                os  : 'linux',
-                arch: 'ppc64le',
-                test: ['sanity.openjdk', 'sanity.system']
+        ppc64leLinux    : [
+                os                  : 'linux',
+                arch                : 'ppc64le',
+                test                : ['openjdktest', 'systemtest', 'perftest'],
+                configureArgs       : '--disable-ccache'
+
         ],
 
         arm32Linux    : [
-                os  : 'linux',
-                arch: 'arm',
+                os                  : 'linux',
+                arch                : 'arm',
                 // TODO Temporarily remove the ARM tests because we don't have fast enough hardware
-                //test                : ['sanity.openjdk']
-                test: false
+                //test                : ['openjdktest', 'perftest']
+                test                : false
         ],
 
-        aarch64Linux  : [
+        aarch64Linux    : [
                 os                  : 'linux',
                 arch                : 'aarch64',
                 additionalNodeLabels: 'centos7',
-                test                : ['sanity.openjdk', 'sanity.system']
+                test                : ['openjdktest', 'systemtest', 'perftest']
         ],
 
-        linuxXL       : [
+        /*
+        "x86-32Windows"    : [
+                os                 : 'windows',
+                arch               : 'x86-32',
+                additionalNodeLabels: 'win2012&&x86-32',
+                test                : false
+        ],
+        */
+        linuxXL    : [
                 os                   : 'linux',
                 additionalNodeLabels : 'centos6',
                 arch                 : 'x64',
+                test                 : ['openjdktest', 'systemtest'],
                 additionalFileNameTag: "linuxXL",
-                test                 : ['sanity.openjdk', 'sanity.system'],
-                configureArgs        : '--with-noncompressedrefs'
+                configureArgs        : '--with-noncompressedrefs --disable-ccache'
         ],
 ]
 
-def javaToBuild = "jdk8u"
+def javaToBuild = "jdk13u"
 
-node("master") {
+node ("master") {
     def scmVars = checkout scm
     load "${WORKSPACE}/pipelines/build/common/import_lib.groovy"
     Closure configureBuild = load "${WORKSPACE}/pipelines/build/common/build_base_file.groovy"
