@@ -96,6 +96,8 @@ function updateRepo() {
   repoName=$1
   repoLocation=$2
 
+  addRemotes
+
   if [ ! -d "$MIRROR/$repoName/.git" ]; then
     rm -rf "$MIRROR/$repoName" || exit 1
     mkdir -p "$MIRROR/$repoName" || exit 1
