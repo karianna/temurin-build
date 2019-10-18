@@ -1,6 +1,8 @@
 import groovy.json.JsonOutput
 
-triggerSchedule = "@daily"
+
+triggerSchedule = "0 0 31 2 0"
+//triggerSchedule = "@daily"
 gitRefSpec = ""
 propagateFailures = false
 runTests = true
@@ -33,6 +35,7 @@ pipelineJob("${BUILD_FOLDER}/${JOB_NAME}") {
             scriptPath(SCRIPT)
         }
     }
+    disabled(disableJob)
     concurrentBuild(false)
     triggers {
         cron(triggerSchedule)

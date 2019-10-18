@@ -75,7 +75,7 @@ class Builder implements Serializable {
                 SCM_REF: scmReference,
                 BUILD_ARGS: buildArgs,
                 NODE_LABEL: "${additionalNodeLabels}&&${platformConfig.os}&&${platformConfig.arch}",
-                CONFIGURE_ARGS: getConfigureArgs(platformConfig, additionalConfigureArgs),
+                CONFIGURE_ARGS: getConfigureArgs(platformConfig, additionalConfigureArgs, variant),
                 OVERRIDE_FILE_NAME_VERSION: overrideFileNameVersion,
                 ADDITIONAL_FILE_NAME_TAG: platformConfig.additionalFileNameTag as String,
                 JDK_BOOT_VERSION: platformConfig.bootJDK as String,
@@ -153,10 +153,22 @@ class Builder implements Serializable {
         return labels
     }
 
-    static String getConfigureArgs(Map<String, ?> configuration, String additionalConfigureArgs) {
+    static String getConfigureArgs(Map<String, ?> configuration, String additionalConfigureArgs, String variant) {
         def configureArgs = ""
 
-        if (configuration.containsKey('configureArgs')) configureArgs += configuration.configureArgs
+        if (configuration.containsKey('configureArgs')) {
+            def configConfigureArgs
+            if (isMap(configuration.configureArgs)) {
+                configConfigureArgs = (configuration.configureArgs as Map<String, ?>).get(variant)
+            } else {
+                configConfigureArgs = configuration.configureArgs
+            }
+
+            if (configConfigureArgs != null) {
+                configureArgs += configConfigureArgs
+            }
+        }
+
         if (additionalConfigureArgs) {
             configureArgs += " " + additionalConfigureArgs
         }
