@@ -18,6 +18,16 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 # shellcheck source=sbin/common/constants.sh
 source "$SCRIPT_DIR/../../sbin/common/constants.sh"
 
+# A function that returns true if the variant is based on Hotspot and should
+# be treated as such by this build script. There is a similar function in
+# sbin/common.sh but we didn't want to refactor all of this on release day.
+function isHotSpot() {
+  [ "${VARIANT}" == "${BUILD_VARIANT_HOTSPOT}" ] ||
+  [ "${VARIANT}" == "${BUILD_VARIANT_HOTSPOT_JFR}" ] ||
+  [ "${VARIANT}" == "${BUILD_VARIANT_SAP}" ] ||
+  [ "${VARIANT}" == "${BUILD_VARIANT_CORRETTO}" ]
+}
+
 export MACOSX_DEPLOYMENT_TARGET=10.8
 export BUILD_ARGS="${BUILD_ARGS}"
 
@@ -26,6 +36,11 @@ XCODE_SWITCH_PATH="/";
 if [ "${JAVA_TO_BUILD}" == "${JDK8_VERSION}" ]
 then
   XCODE_SWITCH_PATH="/Applications/Xcode.app"
+  # See https://github.com/AdoptOpenJDK/openjdk-build/issues/1202
+  if isHotSpot; then
+    export COMPILER_WARNINGS_FATAL=false
+    echo "Compiler Warnings set to: $COMPILER_WARNINGS_FATAL"
+  fi
 else
   export PATH="/Users/jenkins/ccache-3.2.4:$PATH"
   if [ "${VARIANT}" == "${BUILD_VARIANT_OPENJ9}" ]; then
@@ -39,6 +54,7 @@ sudo xcode-select --switch "${XCODE_SWITCH_PATH}"
 
 # Any version above 8
 if [ "$JAVA_FEATURE_VERSION" -gt 8 ]; then
+
     BOOT_JDK_VERSION="$((JAVA_FEATURE_VERSION-1))"
     BOOT_JDK_VARIABLE="JDK$(echo $BOOT_JDK_VERSION)_BOOT_DIR"
     if [ ! -d "$(eval echo "\$$BOOT_JDK_VARIABLE")" ]; then
@@ -67,3 +83,4 @@ if [ "${VARIANT}" == "${BUILD_VARIANT_OPENJ9}" ]; then
     export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --with-xcode-path=/Applications/Xcode.app --with-openj9-cc=/Applications/Xcode7/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang --with-openj9-cxx=/Applications/Xcode7/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++ --with-openj9-developer-dir=/Applications/Xcode7/Xcode.app/Contents/Developer"
   fi
 fi
+
