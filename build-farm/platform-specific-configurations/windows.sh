@@ -27,19 +27,43 @@ export OPENJ9_NASM_VERSION=2.13.03
 
 TOOLCHAIN_VERSION=""
 
-# Any version above 8
-if [ "$JAVA_FEATURE_VERSION" -gt 8 ]; then
+# Any version above 8 (11 for now due to openjdk-build#1409
+if [ "$JAVA_FEATURE_VERSION" -gt 11 ]; then
     BOOT_JDK_VERSION="$((JAVA_FEATURE_VERSION-1))"
     BOOT_JDK_VARIABLE="JDK$(echo $BOOT_JDK_VERSION)_BOOT_DIR"
     if [ ! -d "$(eval echo "\$$BOOT_JDK_VARIABLE")" ]; then
-      export $BOOT_JDK_VARIABLE="$PWD/jdk-$BOOT_JDK_VERSION"
-      if [ ! -d "$(eval echo "\$$BOOT_JDK_VARIABLE/bin")" ]; then
-        wget -q "https://api.adoptopenjdk.net/v2/binary/releases/openjdk${BOOT_JDK_VERSION}?os=windows&release=latest&arch=x64&heap_size=normal&type=jdk&openjdk_impl=hotspot" -O openjdk.zip
+      bootDir="$PWD/jdk-$BOOT_JDK_VERSION"
+      # Note we export $BOOT_JDK_VARIABLE (i.e. JDKXX_BOOT_DIR) here
+      # instead of BOOT_JDK_VARIABLE (no '$').
+      export ${BOOT_JDK_VARIABLE}="$bootDir"
+      if [ ! -d "$bootDir/bin" ]; then
+        echo "Downloading GA release of boot JDK version ${BOOT_JDK_VERSION}..."
+        releaseType="ga"
+        apiUrlTemplate="https://api.adoptopenjdk.net/v3/binary/latest/\${BOOT_JDK_VERSION}/\${releaseType}/windows/\${ARCHITECTURE}/jdk/hotspot/normal/adoptopenjdk"
+        apiURL=$(eval echo ${apiUrlTemplate})
+        # make-adopt-build-farm.sh has 'set -e'. We need to disable that
+        # for the fallback mechanism, as downloading of the GA binary might
+        # fail.
+        set +e
+        wget -q "${apiURL}" -O openjdk.zip
+        retVal=$?
+        set -e
+        if [ $retVal -ne 0 ]; then
+          # We must be a JDK HEAD build for which no boot JDK exists other than
+          # nightlies?
+          echo "Downloading GA release of boot JDK version ${BOOT_JDK_VERSION} failed."
+          echo "Attempting to download EA release of boot JDK version ${BOOT_JDK_VERSION} ..."
+          # shellcheck disable=SC2034
+          releaseType="ea"
+          apiURL=$(eval echo ${apiUrlTemplate})
+          wget -q "${apiURL}" -O openjdk.zip
+        fi
         unzip -q openjdk.zip
-        mv $(ls -d jdk-$BOOT_JDK_VERSION*) jdk-$BOOT_JDK_VERSION
+        mv $(ls -d jdk-${BOOT_JDK_VERSION}*) "$bootDir"
       fi
     fi
     export JDK_BOOT_DIR="$(eval echo "\$$BOOT_JDK_VARIABLE")"
+    "$JDK_BOOT_DIR/bin/java" -version 2>&1 | sed 's/^/BOOT JDK: /'
 fi
 
 if [ "${ARCHITECTURE}" == "x86-32" ]

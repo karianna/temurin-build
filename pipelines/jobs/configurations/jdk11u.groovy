@@ -8,7 +8,8 @@ targetConfigurations = [
         ],
         "x64Linux"    : [
                 "hotspot",
-                "openj9"
+                "openj9",
+                "corretto"
         ],
         "x64Windows"  : [
                 "hotspot",
@@ -39,9 +40,21 @@ targetConfigurations = [
         "arm32Linux"  : [
                 "hotspot"
         ],
-        "linuxXL"     : [
+        "x64LinuxXL"     : [
+                "openj9"
+        ],
+        "s390xLinuxXL"     : [
+                "openj9"
+        ],
+        "ppc64leLinuxXL"     : [
+                "openj9"
+        ],
+        "aarch64LinuxXL": [
                 "openj9"
         ]
 ]
+
+// 23:30
+triggerSchedule="TZ=UTC\n30 23 * * *"
 
 return this

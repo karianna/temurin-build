@@ -79,6 +79,15 @@ configuringBootJDKConfigureParameter()
   addConfigureArgIfValueIsNotEmpty "--with-boot-jdk=" "${BUILD_CONFIG[JDK_BOOT_DIR]}"
 }
 
+# Configure the boot JDK
+configuringMacOSCodesignParameter()
+{
+  if [ ! -z "${BUILD_CONFIG[MACOSX_CODESIGN_IDENTITY]}" ]; then
+    # This commmand needs to escape the double quotes because they are needed to preserve the spaces in the codesign cert name
+    addConfigureArg "--with-macosx-codesign-identity=" "\"${BUILD_CONFIG[MACOSX_CODESIGN_IDENTITY]}\""
+  fi
+}
+
 # Get the OpenJDK update version and build version
 getOpenJDKUpdateAndBuildVersion()
 {
@@ -123,20 +132,22 @@ getOpenJdkVersion() {
   local version;
 
   if [ "${BUILD_CONFIG[BUILD_VARIANT]}" == "${BUILD_VARIANT_CORRETTO}" ]; then
-    local updateRegex="UPDATE_VERSION=([0-9]+)";
-    local buildRegex="BUILD_NUMBER=b([0-9]+)";
+    local corrVerFile=${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/${BUILD_CONFIG[OPENJDK_SOURCE_DIR]}/version.txt
+ 
+    local corrVersion="$(cut -d'.' -f 1 < ${corrVerFile})"
 
-    local versionData="$(tr '\n' ' ' < ${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/${BUILD_CONFIG[OPENJDK_SOURCE_DIR]}/version.spec)"
-
-    local updateNum
-    local buildNum
-    if [[ "${versionData}" =~ $updateRegex ]]; then
-      updateNum="${BASH_REMATCH[1]}"
+    if [ "${corrVersion}" == "8" ]; then
+      local updateNum="$(cut -d'.' -f 2 < ${corrVerFile})"
+      local buildNum="$(cut -d'.' -f 3 < ${corrVerFile})"
+      local fixNum="$(cut -d'.' -f 4 < ${corrVerFile})"
+      version="jdk8u${updateNum}-b${buildNum}.${fixNum}"
+    else
+      local minorNum="$(cut -d'.' -f 2 < ${corrVerFile})"
+      local updateNum="$(cut -d'.' -f 3 < ${corrVerFile})"
+      local buildNum="$(cut -d'.' -f 4 < ${corrVerFile})"
+      local fixNum="$(cut -d'.' -f 5 < ${corrVerFile})"
+      version="jdk-${corrVersion}.${minorNum}.${updateNum}+${buildNum}.${fixNum}"
     fi
-    if [[ "${versionData}" =~ $buildRegex ]]; then
-      buildNum="${BASH_REMATCH[1]}"
-    fi
-    version="8u${updateNum}-b${buildNum}"
   else
     version=${BUILD_CONFIG[TAG]:-$(getFirstTagFromOpenJDKGitRepo)}
 
@@ -174,7 +185,7 @@ configuringVersionStringParameter()
     fi
 
     if [ "${BUILD_CONFIG[BUILD_VARIANT]}" == "${BUILD_VARIANT_HOTSPOT}" ] && [ ${BUILD_CONFIG[ADOPT_PATCHES]} == true ]; then
-      addConfigureArg "--with-company-name=" "AdoptOpenJDK"
+      addConfigureArg "--with-vendor-name=" "AdoptOpenJDK"
     fi
 
     # Set the update version (e.g. 131), this gets passed in from the calling script
@@ -228,12 +239,12 @@ configuringVersionStringParameter()
     addConfigureArg "--with-vendor-version-string=" "AdoptOpenJDK"
     addConfigureArg "--with-vendor-url=" "https://adoptopenjdk.net/"
     addConfigureArg "--with-vendor-name=" "AdoptOpenJDK"
-    addConfigureArg "--with-vendor-bug-url=" "https://github.com/AdoptOpenJDK/openjdk-build/issues"
+    addConfigureArg "--with-vendor-bug-url=" "https://github.com/AdoptOpenJDK/openjdk-support/issues"
 
     if [[ "${BUILD_CONFIG[BUILD_VARIANT]}" == "${BUILD_VARIANT_OPENJ9}" ]]; then
       addConfigureArg "--with-vendor-vm-bug-url=" "https://github.com/eclipse/openj9/issues"
     else
-      addConfigureArg "--with-vendor-vm-bug-url=" "https://github.com/AdoptOpenJDK/openjdk-build/issues"
+      addConfigureArg "--with-vendor-vm-bug-url=" "https://github.com/AdoptOpenJDK/openjdk-support/issues"
     fi
   fi
   echo "Completed configuring the version string parameter, config args are now: ${CONFIGURE_ARGS}"
@@ -246,15 +257,10 @@ buildingTheRestOfTheConfigParameters()
     addConfigureArg "--enable-ccache" ""
   fi
 
-  addConfigureArg "--with-alsa=" "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/installedalsa"
-
   # Point-in-time dependency for openj9 only
   if [[ "${BUILD_CONFIG[BUILD_VARIANT]}" == "${BUILD_VARIANT_OPENJ9}" ]] ; then
     addConfigureArg "--with-freemarker-jar=" "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/freemarker-${FREEMARKER_LIB_VERSION}/freemarker.jar"
   fi
-
-  addConfigureArg "--with-x=" "/usr/include/X11"
-
 
   if [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK8_CORE_VERSION}" ] ; then
     # We don't want any extra debug symbols - ensure it's set to release,
@@ -262,10 +268,11 @@ buildingTheRestOfTheConfigParameters()
     addConfigureArg "--with-debug-level=" "release"
     addConfigureArg "--disable-zip-debug-info" ""
     addConfigureArg "--disable-debug-symbols" ""
+    addConfigureArg "--with-x=" "/usr/include/X11"
+    addConfigureArg "--with-alsa=" "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/installedalsa"
   else
     addConfigureArg "--with-debug-level=" "release"
     addConfigureArg "--with-native-debug-symbols=" "none"
-    addConfigureArg "--enable-dtrace=" "auto"
   fi
 }
 
@@ -296,6 +303,7 @@ configureCommandParameters()
 {
   configuringVersionStringParameter
   configuringBootJDKConfigureParameter
+  configuringMacOSCodesignParameter
 
   if [[ "$OSTYPE" == "cygwin" ]] || [[ "$OSTYPE" == "msys" ]]; then
     echo "Windows or Windows-like environment detected, skipping configuring environment for custom Boot JDK and other 'configure' settings."
@@ -313,10 +321,6 @@ configureCommandParameters()
 
   echo "Configuring jvm variants if provided"
   addConfigureArgIfValueIsNotEmpty "--with-jvm-variants=" "${BUILD_CONFIG[JVM_VARIANT]}"
-
-  if [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK8_CORE_VERSION}" ] || [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK9_CORE_VERSION}" ]; then
-    addConfigureArgIfValueIsNotEmpty "--with-cacerts-file=" "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/cacerts_area/security/cacerts"
-  fi
 
   # Now we add any configure arguments the user has specified on the command line.
   CONFIGURE_ARGS="${CONFIGURE_ARGS} ${BUILD_CONFIG[USER_SUPPLIED_CONFIGURE_ARGS]}"
@@ -350,7 +354,7 @@ buildTemplatedFile() {
 
   # If it's Java 9+ then we also make test-image to build the native test libraries
   JDK_PREFIX="jdk"
-  JDK_VERSION_NUMBER="${BUILD_CONFIG[OPENJDK_CORE_VERSION]#$JDK_PREFIX}"
+  JDK_VERSION_NUMBER="${BUILD_CONFIG[OPENJDK_FEATURE_NUMBER]}"
   if [ "$JDK_VERSION_NUMBER" -gt 8 ] || [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDKHEAD_VERSION}" ]; then
     MAKE_TEST_IMAGE=" test-image" # the added white space is deliberate as it's the last arg
   fi
@@ -623,7 +627,15 @@ getFirstTagFromOpenJDKGitRepo()
     else
       git fetch --tags "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/${BUILD_CONFIG[OPENJDK_SOURCE_DIR]}"
       revList=$(git rev-list --tags --topo-order --max-count=$GIT_TAGS_TO_SEARCH)
-      firstMatchingNameFromRepo=$(git describe --tags $revList | grep jdk | grep -v openj9 | grep -v _adopt | grep -v "\-ga" | head -1)
+      if [[ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDKHEAD_VERSION}" ]]; then
+        # For the development tree jdk/jdk, there might be two major versions in development
+        # in parallel. One in stabilization mode, and the currently active developement line
+        # Thus, add an explicit grep on the specified FEATURE_VERSION so as to appropriately
+	# set the correct build number later on.
+        firstMatchingNameFromRepo=$(git describe --tags $revList | grep "jdk-${BUILD_CONFIG[OPENJDK_FEATURE_NUMBER]}" | grep -v openj9 | grep -v _adopt | grep -v "\-ga" | head -1)
+      else
+        firstMatchingNameFromRepo=$(git describe --tags $revList | grep jdk | grep -v openj9 | grep -v _adopt | grep -v "\-ga" | head -1)
+      fi
       # this may not find the correct tag if there are multiples on the commit so find commit
       # that contains this tag and then use `git tag` to find the real tag
       revList=$(git rev-list -n 1 $firstMatchingNameFromRepo --)

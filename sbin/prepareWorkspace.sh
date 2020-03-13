@@ -33,11 +33,11 @@ source "$SCRIPT_DIR/common/constants.sh"
 # Set default versions for 3 libraries that OpenJDK relies on to build
 ALSA_LIB_VERSION=${ALSA_LIB_VERSION:-1.1.6}
 ALSA_LIB_CHECKSUM=${ALSA_LIB_CHECKSUM:-5f2cd274b272cae0d0d111e8a9e363f08783329157e8dd68b3de0c096de6d724}
-FREEMARKER_LIB_CHECKSUM=${FREEMARKER_LIB_CHECKSUM:-eb790d229d45fbaad1662a5b3e7a6a9d9c628b92f04567066dcdc8d2a3fe3660}
+FREEMARKER_LIB_CHECKSUM=${FREEMARKER_LIB_CHECKSUM:-affeb3a9a1b6a85861add091ccfff561329dccc74546843d12f3016daaf51faa}
 FREETYPE_LIB_CHECKSUM=${FREETYPE_LIB_CHECKSUM:-ec391504e55498adceb30baceebd147a6e963f636eb617424bcfc47a169898ce}
 
 FREETYPE_FONT_SHARED_OBJECT_FILENAME="libfreetype.so*"
-FREEMARKER_LIB_VERSION=${FREEMARKER_LIB_VERSION:-2.3.29}
+FREEMARKER_LIB_VERSION=${FREEMARKER_LIB_VERSION:-2.3.30}
 
 # Create a new clone or update the existing clone of the OpenJDK source repo
 # TODO refactor this for SRP
@@ -100,12 +100,12 @@ checkoutAndCloneOpenJDKGitRepo()
     git reset --hard "origin/${BUILD_CONFIG[BRANCH]}"
   fi
 
-  if [[ "${BUILD_CONFIG[BUILD_VARIANT]}" == "${BUILD_VARIANT_HOTSPOT}" ]] && [[ "${BUILD_CONFIG[OPENJDK_FEATURE_NUMBER]}" -ge 11 ]] ; then
+  if [[ "${BUILD_CONFIG[BUILD_VARIANT]}" == "${BUILD_VARIANT_HOTSPOT}" ]] && [[ "${BUILD_CONFIG[OPENJDK_FEATURE_NUMBER]}" -ge 11 ]]; then
      # Verify Adopt patches tag is being built, otherwise we may be accidently just building "raw" OpenJDK
      if [ ! -f "${ADOPTOPENJDK_MD_MARKER_FILE}" ] && [ "${BUILD_CONFIG[DISABLE_ADOPT_BRANCH_SAFETY]}" == "false" ]; then
        echo "${ADOPTOPENJDK_MD_MARKER_FILE} marker file not found in fetched source to be built, this may mean the wrong SCMReference build parameter has been specified. Ensure the correct AdoptOpenJDK patch release tag is specified, eg.for build jdk-11.0.4+10, it would be jdk-11.0.4+10_adopt"
        exit 1
-     fi 
+     fi
   fi
 
   git clean -ffdx
@@ -207,18 +207,28 @@ checkFingerprint() {
     return
   fi
 
-  rm /tmp/public_key.gpg || true
+  rm ${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/public_key.gpg || true
 
-  gpg --no-options --output /tmp/public_key.gpg --dearmor "${SCRIPT_DIR}/sig_check/${publicKey}.asc"
+  gpg --no-options --output ${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/public_key.gpg --dearmor "${SCRIPT_DIR}/sig_check/${publicKey}.asc"
 
   # If this dir does not exist, gpg 1.4.20 supplied on Ubuntu16.04 aborts
   mkdir -p $HOME/.gnupg
-  local verify=$(gpg --no-options -v --no-default-keyring --keyring "/tmp/public_key.gpg" --verify $sigFile $fileName 2>&1)
+  local verify=$(gpg --no-options -v --no-default-keyring --keyring "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/public_key.gpg" --verify $sigFile $fileName 2>&1)
 
   echo $verify
 
   # grep out and trim fingerprint from line of the form "Primary key fingerprint: 58E0 C111 E39F 5408 C5D3  EC76 C1A6 0EAC E707 FDA5"
-  local fingerprint=$(echo $verify | grep "Primary key fingerprint" | egrep -o "([0-9A-F]{4} ? ?){10}" | sed -e 's/[[:space:]]*$//')
+  local fingerprint=$(echo $verify | grep "Primary key fingerprint" | egrep -o "([0-9A-F]{4} ? ?){10}" | head -n 1)
+
+  # Remove whitespace from finger print as different versions of gpg may or may not add spaces to the fingerprint
+  # specifically gpg on Ubuntu 16.04 produces:
+  # `13AC 2213 964A BE1D 1C14 7C0E 1939 A252 0BAB 1D90`
+  # where as 18.04 produces:
+  # `13AC2213964ABE1D1C147C0E1939A2520BAB1D90`
+  fingerprint="${fingerprint// /}"
+
+  # remove spaces from expected fingerprint to match the format from the output of gpg
+  expectedFingerprint="${expectedFingerprint// /}"
 
   if [ "$fingerprint" != "$expectedFingerprint" ]; then
     echo "Failed to verify signature of $fileName"
@@ -284,7 +294,7 @@ checkingAndDownloadingFreeType()
   cd "${BUILD_CONFIG[WORKSPACE_DIR]}/libs/" || exit
   echo "Checking for freetype at ${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}"
 
-  FOUND_FREETYPE=$(find "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/installedfreetype/lib" -name "${FREETYPE_FONT_SHARED_OBJECT_FILENAME}" || true)
+  FOUND_FREETYPE=$(find "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/installedfreetype/lib/" -name "${FREETYPE_FONT_SHARED_OBJECT_FILENAME}" || true)
 
   if [[ ! -z "$FOUND_FREETYPE" ]] ; then
     echo "Skipping FreeType download"
@@ -331,6 +341,11 @@ checkingAndDownloadingFreeType()
         cp -r "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/installedfreetype/include/freetype2/freetype/"* "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/installedfreetype/include/"
      fi
 
+     # For unclear reasons on OpenSUSE it puts the lib into a different dir
+     if [ -d "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/installedfreetype/lib64" ] && [ ! -d "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/installedfreetype/lib" ]; then
+       ln -s lib64 "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/installedfreetype/lib"
+     fi
+
      if [[ ${BUILD_CONFIG[OS_KERNEL_NAME]} == "darwin" ]] ; then
         TARGET_DYNAMIC_LIB_DIR="${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}"/installedfreetype/lib/
         TARGET_DYNAMIC_LIB="${TARGET_DYNAMIC_LIB_DIR}"/libfreetype.6.dylib
@@ -368,7 +383,7 @@ checkingAndDownloadCaCerts()
 {
   cd "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}" || exit
 
-  echo "Retrieving cacerts file"
+  echo "Retrieving cacerts file if needed"
   # Ensure it's the latest we pull in
   rm -rf "cacerts_area"
   mkdir "cacerts_area" || exit
@@ -378,15 +393,8 @@ checkingAndDownloadCaCerts()
   if [ "${BUILD_CONFIG[BUILD_VARIANT]}" == "${BUILD_VARIANT_CORRETTO}" ]; then
       local caLink="https://github.com/corretto/corretto-8/blob/preview-release/cacerts?raw=true";
       downloadCerts "$caLink"
-  elif [ "${BUILD_CONFIG[USE_JEP319_CERTS]}" == "true" ];
+  elif [ "${BUILD_CONFIG[USE_JEP319_CERTS]}" != "true" ];
   then
-    if [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK8_CORE_VERSION}" ] || [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK9_CORE_VERSION}" ]
-    then
-      echo "Requested use of JEP319 certs"
-      local caLink="https://github.com/AdoptOpenJDK/openjdk-jdk11u/blob/dev/src/java.base/share/lib/security/cacerts?raw=true";
-      downloadCerts "$caLink"
-    fi
-  else
     git init
     git remote add origin -f https://github.com/AdoptOpenJDK/openjdk-build.git
     git config core.sparsecheckout true

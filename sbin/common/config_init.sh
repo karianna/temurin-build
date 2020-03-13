@@ -59,6 +59,7 @@ JDK_PATH
 JRE_PATH
 TEST_IMAGE_PATH
 JVM_VARIANT
+MACOSX_CODESIGN_IDENTITY
 MAKE_ARGS_FOR_ANY_PLATFORM
 MAKE_COMMAND_NAME
 NUM_PROCESSORS
@@ -187,6 +188,9 @@ function parseConfigurationArguments() {
         "--make-args" )
         BUILD_CONFIG[USER_SUPPLIED_MAKE_ARGS]="$1"; shift;;
 
+        "--codesign-identity" )
+        BUILD_CONFIG[MACOSX_CODESIGN_IDENTITY]="$1"; shift;;
+
         "--clean-docker-build" | "-c" )
         BUILD_CONFIG[CLEAN_DOCKER_BUILD]=true;;
 
@@ -300,7 +304,7 @@ function setBranch() {
   if [ "${BUILD_CONFIG[BUILD_VARIANT]}" == "${BUILD_VARIANT_OPENJ9}" ]; then
     branch="openj9";
   elif [ "${BUILD_CONFIG[BUILD_VARIANT]}" == "${BUILD_VARIANT_CORRETTO}" ]; then
-    branch="preview-release";
+    branch="develop";
   fi
 
   BUILD_CONFIG[BRANCH]=${BUILD_CONFIG[BRANCH]:-$branch}
@@ -317,6 +321,9 @@ function configDefaults() {
   if [ "${BUILD_CONFIG[OS_KERNEL_NAME]}" == "aix" ]; then
     arch=$(uname -p | sed 's/powerpc/ppc/')
   fi
+
+  BUILD_CONFIG[JDK_PATH]=""
+  BUILD_CONFIG[JRE_PATH]=""
 
   # The O/S architecture, e.g. x86_64 for a modern intel / Mac OS X
   BUILD_CONFIG[OS_ARCHITECTURE]=${arch}
@@ -348,6 +355,8 @@ function configDefaults() {
 
   BUILD_CONFIG[SIGN]="false"
   BUILD_CONFIG[JDK_BOOT_DIR]=""
+
+  BUILD_CONFIG[MACOSX_CODESIGN_IDENTITY]=${BUILD_CONFIG[MACOSX_CODESIGN_IDENTITY]:-""}
 
   BUILD_CONFIG[NUM_PROCESSORS]="1"
   BUILD_CONFIG[TARGET_FILE_NAME]="OpenJDK.tar.gz"
