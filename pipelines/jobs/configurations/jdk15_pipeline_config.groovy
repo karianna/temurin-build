@@ -19,7 +19,13 @@ class Config15 {
                         nightly: false,
                         release: ['sanity.openjdk', 'sanity.system', 'extended.system', 'sanity.perf', 'sanity.external', 'special.functional']
                 ],
-                configureArgs       : '--disable-ccache --enable-dtrace'
+                configureArgs       : [
+                        "openj9"      : '--disable-ccache --enable-dtrace --enable-jitserver',
+                        "hotspot"     : '--disable-ccache --enable-dtrace',
+                        "hotspot-jfr" : '--disable-ccache --enable-dtrace',
+                        "corretto"    : '--disable-ccache --enable-dtrace',
+                        "SapMachine"  : '--disable-ccache --enable-dtrace'
+                ]
         ],
 
         // Currently we have to be quite specific about which windows to use as not all of them have freetype installed
@@ -41,7 +47,10 @@ class Config15 {
         ppc64Aix    : [
                 os                  : 'aix',
                 arch                : 'ppc64',
-                additionalNodeLabels: 'xlc16',
+                additionalNodeLabels: [
+                        hotspot: 'xlc16&&aix710',
+                        openj9:  'xlc16&&aix715'
+                ],
                 test                : [
                         nightly: false,
                         release: ['sanity.openjdk', 'sanity.system', 'extended.system']
@@ -66,7 +75,10 @@ class Config15 {
                         nightly: false,
                         release: ['sanity.openjdk', 'sanity.system', 'extended.system', 'sanity.perf']
                 ],
-                configureArgs       : '--disable-ccache --enable-dtrace'
+                configureArgs       : [
+                        "hotspot"     : '--disable-ccache --enable-dtrace',
+                        "openj9"      : '--disable-ccache --enable-dtrace --enable-jitserver'
+                ]
 
         ],
 
