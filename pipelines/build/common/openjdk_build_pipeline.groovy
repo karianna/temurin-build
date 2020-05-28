@@ -62,8 +62,13 @@ class Build {
         if (matcher.matches()) {
             return Integer.parseInt(matcher.group('version'))
         } else if ("jdk".equalsIgnoreCase(javaToBuild.trim())) {
-            // This needs to get updated when JDK HEAD version updates
-            return Integer.valueOf("15")
+            String javaFeatureVersion = System.getenv("JAVA_FEATURE_VERSION")
+            if (javaFeatureVersion) {
+                return Integer.valueOf(javaFeatureVersion)
+            } else {
+                context.error("Environment variable JAVA_FEATURE_VERSION not set")
+                throw new Exception()
+            }
         } else {
             context.error("Failed to read java version '${javaToBuild}'")
             throw new Exception()
@@ -237,12 +242,6 @@ class Build {
                         ['$class': 'LabelParameterValue', name: 'NODE_LABEL', label: "${nodeFilter}"]
                 ]
         
-        // Output notification of downstream failure (the build will fail automatically)
-        def jobResult = installerJob.getResult()
-        if (jobResult != 'SUCCESS') {
-            context.println "ERROR: downstream mac installer ${jobResult}. See ${installerJob.getAbsoluteUrl()}"
-        }
-
         context.copyArtifacts(
                 projectName: "build-scripts/release/create_installer_mac",
                 selector: context.specific("${installerJob.getNumber()}"),
@@ -276,11 +275,6 @@ class Build {
                         ['$class': 'LabelParameterValue', name: 'NODE_LABEL', label: "${nodeFilter}"]
                 ]
         
-        // Output notification of downstream failure (the build will fail automatically)
-        def jobResult = installerJob.getResult()
-        if (jobResult != 'SUCCESS') {
-            context.println "ERROR: downstream linux installer ${jobResult}. See ${installerJob.getAbsoluteUrl()}"
-        }
     }
 
     private void buildWindowsInstaller(VersionInfo versionData) {
@@ -308,13 +302,6 @@ class Build {
                         context.string(name: 'ARCH', value: "${buildConfig.ARCHITECTURE}"),
                         ['$class': 'LabelParameterValue', name: 'NODE_LABEL', label: "${buildConfig.TARGET_OS}&&wix"]
                 ]
-        
-        // Output notification of downstream failure (the build will fail automatically)
-        def jobResult = installerJob.getResult()
-        if (jobResult != 'SUCCESS') {
-            context.println "ERROR: downstream windows installer ${jobResult}. See ${installerJob.getAbsoluteUrl()}"
-        }
-
         context.copyArtifacts(
                 projectName: "build-scripts/release/create_installer_windows",
                 selector: context.specific("${installerJob.getNumber()}"),
@@ -333,17 +320,17 @@ class Build {
         context.node('master') {
             context.stage("installer") {
                 switch (buildConfig.TARGET_OS) {
-                    case "mac": buildMacInstaller(versionData); break
-                    case "linux": buildLinuxInstaller(versionData); break
-                    case "windows": buildWindowsInstaller(versionData); break
-                    default: return; break
+                        case "mac": buildMacInstaller(versionData); break
+                        case "linux": buildLinuxInstaller(versionData); break
+                        case "windows": buildWindowsInstaller(versionData); break
+                	default: return; break
                 }
-                try {
+		try {
                     context.sh 'for file in $(ls workspace/target/*.tar.gz workspace/target/*.pkg workspace/target/*.msi); do sha256sum "$file" > $file.sha256.txt ; done'
                     writeMetadata(versionData)
                     context.archiveArtifacts artifacts: "workspace/target/*"
                 } catch (e) {
-                    context.println("Failed to build installer ${buildConfig.TARGET_OS} ${e}")
+                    context.println("Failed to build ${buildConfig.TARGET_OS} installer ${e}")
                 }
             }
         }
@@ -472,7 +459,11 @@ class Build {
         return context.stage("build") {
             if (cleanWorkspace) {
                 try {
-                    context.cleanWs notFailBuild: true
+                    if (buildConfig.TARGET_OS == "windows" && buildConfig.VARIANT == "openj9") {
+                        context.cleanWs notFailBuild: true, disableDeferredWipeout: true, deleteDirs: true
+                    } else {
+                        context.cleanWs notFailBuild: true
+                    }
                 } catch (e) {
                     context.println "Failed to clean ${e}"
                 }
@@ -498,65 +489,69 @@ class Build {
     }
 
     def build() {
-        try {
+        context.timestamps {
+            context.timeout(time: 18, unit: "HOURS") {
+                try {
 
-            context.println "Build config"
-            context.println buildConfig.toJson()
+                    context.println "Build config"
+                    context.println buildConfig.toJson()
 
-            def filename = determineFileName()
+                    def filename = determineFileName()
 
-            context.println "Executing tests: ${buildConfig.TEST_LIST}"
-            context.println "Build num: ${env.BUILD_NUMBER}"
-            context.println "File name: ${filename}"
+                    context.println "Executing tests: ${buildConfig.TEST_LIST}"
+                    context.println "Build num: ${env.BUILD_NUMBER}"
+                    context.println "File name: ${filename}"
 
-            def enableTests = Boolean.valueOf(buildConfig.ENABLE_TESTS)
-            def cleanWorkspace = Boolean.valueOf(buildConfig.CLEAN_WORKSPACE)
+                    def enableTests = Boolean.valueOf(buildConfig.ENABLE_TESTS)
+                    def cleanWorkspace = Boolean.valueOf(buildConfig.CLEAN_WORKSPACE)
 
-            context.stage("queue") {
-                def NodeHelper = context.library(identifier: 'openjdk-jenkins-helper@master').NodeHelper
+                    context.stage("queue") {
+                        def NodeHelper = context.library(identifier: 'openjdk-jenkins-helper@master').NodeHelper
 
-                if (NodeHelper.nodeIsOnline(buildConfig.NODE_LABEL)) {
-                    context.node(buildConfig.NODE_LABEL) {
-                        // This is to avoid windows path length issues.
-                        context.echo("checking ${buildConfig.TARGET_OS}")
-                        if (buildConfig.TARGET_OS == "windows") {
-                            // See https://github.com/AdoptOpenJDK/openjdk-infrastructure/issues/1284#issuecomment-621909378 for justification of the below path
-                            def workspace = "C:/workspace/openjdk-build/"
-                            if (env.CYGWIN_WORKSPACE) {
-                                workspace = env.CYGWIN_WORKSPACE
-                            }
-                            context.echo("changing ${workspace}")
-                            context.ws(workspace) {
-                                buildScripts(cleanWorkspace, filename)
+                        if (NodeHelper.nodeIsOnline(buildConfig.NODE_LABEL)) {
+                            context.node(buildConfig.NODE_LABEL) {
+                                // This is to avoid windows path length issues.
+                                context.echo("checking ${buildConfig.TARGET_OS}")
+                                if (buildConfig.TARGET_OS == "windows") {
+                                    // See https://github.com/AdoptOpenJDK/openjdk-infrastructure/issues/1284#issuecomment-621909378 for justification of the below path
+                                    def workspace = "C:/workspace/openjdk-build/"
+                                    if (env.CYGWIN_WORKSPACE) {
+                                        workspace = env.CYGWIN_WORKSPACE
+                                    }
+                                    context.echo("changing ${workspace}")
+                                    context.ws(workspace) {
+                                        buildScripts(cleanWorkspace, filename)
+                                    }
+                                } else {
+                                    buildScripts(cleanWorkspace, filename)
+                                }
                             }
                         } else {
-                            buildScripts(cleanWorkspace, filename)
+                            context.error("No node of this type exists: ${buildConfig.NODE_LABEL}")
+                            return
                         }
                     }
-                } else {
-                    context.error("No node of this type exists: ${buildConfig.NODE_LABEL}")
-                    return
-                }
-            }
 
-            // Sign and archive jobs if needed
-            sign(versionInfo)
+                    // Sign and archive jobs if needed
+                    sign(versionInfo)
 
-            if (enableTests && buildConfig.TEST_LIST.size() > 0) {
-                try {
-                    def testStages = runTests()
-                    context.parallel testStages
+                    if (enableTests && buildConfig.TEST_LIST.size() > 0) {
+                        try {
+                            def testStages = runTests()
+                            context.parallel testStages
+                        } catch (Exception e) {
+                            context.println "Failed test: ${e}"
+                        }
+                    }
+
+                    //buildInstaller if needed
+                    buildInstaller(versionInfo)
+
                 } catch (Exception e) {
-                    context.println "Failed test: ${e}"
+                    currentBuild.result = 'FAILURE'
+                    context.println "Execution error: " + e.getMessage()
                 }
             }
-
-            //buildInstaller if needed
-            buildInstaller(versionInfo)
-
-        } catch (Exception e) {
-            currentBuild.result = 'FAILURE'
-            context.println "Execution error: " + e.getMessage()
         }
     }
 }
