@@ -62,13 +62,13 @@ class Build {
         if (matcher.matches()) {
             return Integer.parseInt(matcher.group('version'))
         } else if ("jdk".equalsIgnoreCase(javaToBuild.trim())) {
-            // Query the Adopt api to get the "most_recent_feature_version" (currently 15)
+            // Query the Adopt api to get the "tip_version"
             def JobHelper = context.library(identifier: 'openjdk-jenkins-helper@master').JobHelper
-            context.println "Querying Adopt Api for the JDK-Head number (most_recent_feature_version)..."
+            context.println "Querying Adopt Api for the JDK-Head number (tip_version)..."
 
-            response = JobHelper.getAvailableReleases()
-            Integer headVersion = Integer.valueOf(response.most_recent_feature_version)
-            if (headVersion.equalsIgnoreCase(null)) {
+            def response = JobHelper.getAvailableReleases()
+            Integer headVersion = Integer.valueOf(response.tip_version)
+            if (headVersion == null) {
                 context.println "Failure on api connection or parsing."
                 throw new Exception()
             }
@@ -311,7 +311,7 @@ class Build {
         context.copyArtifacts(
                 projectName: "build-scripts/release/create_installer_windows",
                 selector: context.specific("${installerJob.getNumber()}"),
-                filter: 'wix/ReleaseDir/OpenJDK*jdk_*_windows*.msi',
+                filter: 'wix/ReleaseDir/*',
                 fingerprintArtifacts: true,
                 target: "workspace/target/",
                 flatten: true)
@@ -342,7 +342,7 @@ class Build {
                 context.copyArtifacts(
                     projectName: "build-scripts/release/create_installer_windows",
                     selector: context.specific("${jreinstallerJob.getNumber()}"),
-                    filter: 'wix/ReleaseDir/OpenJDK*jre_*_windows*.msi',
+                    filter: 'wix/ReleaseDir/*',
                     fingerprintArtifacts: true,
                     target: "workspace/target/",
                     flatten: true

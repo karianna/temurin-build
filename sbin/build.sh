@@ -438,7 +438,13 @@ buildSharedLibs() {
     local gradleJavaHome=$(getGradleHome)
     echo "Running gradle with $gradleJavaHome"
 
-    JAVA_HOME="$gradleJavaHome" GRADLE_USER_HOME=./gradle-cache bash ./gradlew --no-daemon clean uberjar
+    gradlecount=1
+    while ! JAVA_HOME="$gradleJavaHome" GRADLE_USER_HOME=./gradle-cache bash ./gradlew --no-daemon clean uberjar; do
+      echo "RETRYWARNING: Gradle failed on attempt $gradlecount"
+      sleep 120 # Wait before retrying in case of network/server outage ...
+      gradlecount=$(( gradlecount + 1 ))
+      [ $gradlecount -gt 3 ] && exit 1
+    done
 
     # Test that the parser can execute as fail fast rather than waiting till after the build to find out
     "$gradleJavaHome"/bin/java -version 2>&1 | "$gradleJavaHome"/bin/java -cp "target/libs/adopt-shared-lib.jar" ParseVersion -s -f semver 1
