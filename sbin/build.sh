@@ -399,7 +399,9 @@ executeTemplatedFile() {
   stepIntoTheWorkingDirectory
 
   echo "Currently at '${PWD}'"
-  bash "${BUILD_CONFIG[WORKSPACE_DIR]}/config/configure-and-build.sh"
+
+  # Execute the build passing the workspace dir and target dir as params for configure.txt
+  bash "${BUILD_CONFIG[WORKSPACE_DIR]}/config/configure-and-build.sh" ${BUILD_CONFIG[WORKSPACE_DIR]} ${BUILD_CONFIG[TARGET_DIR]}
   exitCode=$?
 
   if [ "${exitCode}" -eq 1 ]; then
@@ -444,10 +446,12 @@ buildSharedLibs() {
     cd "${LIB_DIR}"
 
     local gradleJavaHome=$(getGradleHome)
-    echo "Running gradle with $gradleJavaHome"
+    export GRADLE_USER_HOME="${BUILD_CONFIG[WORKSPACE_DIR]}/.gradle"
+
+    echo "Running gradle with $gradleJavaHome at ${GRADLE_USER_HOME}"
 
     gradlecount=1
-    while ! JAVA_HOME="$gradleJavaHome" GRADLE_USER_HOME=./gradle-cache bash ./gradlew --no-daemon clean uberjar; do
+    while ! JAVA_HOME="$gradleJavaHome" GRADLE_USER_HOME="${GRADLE_USER_HOME}" bash ./gradlew --no-daemon clean uberjar; do
       echo "RETRYWARNING: Gradle failed on attempt $gradlecount"
       sleep 120 # Wait before retrying in case of network/server outage ...
       gradlecount=$(( gradlecount + 1 ))
