@@ -67,11 +67,7 @@ class Build {
             context.println "Querying Adopt Api for the JDK-Head number (tip_version)..."
 
             def response = JobHelper.getAvailableReleases(context)
-            Integer headVersion = Integer.valueOf(response.tip_version)
-            if (headVersion == null) {
-                context.println "Failure on api connection or parsing."
-                throw new Exception()
-            }
+            int headVersion = (int) response.getAt("tip_version")
             context.println "Found Java Version Number: ${headVersion}"
             return headVersion
         } else {
@@ -569,23 +565,29 @@ class Build {
                             if (buildConfig.CODEBUILD) {
                                 label = "codebuild"
                             }
-                            if (NodeHelper.nodeIsOnline(label) || (buildConfig.CODEBUILD)) {
-                                context.node(label) {
+                            context.node(label) {
+                                // Cannot clean workspace from inside docker container
+                                if (cleanWorkspace) {
+                                    try {
+                                        context.cleanWs notFailBuild: true
+                                    } catch (e) {
+                                        context.println "Failed to clean ${e}"
+                                    }
+                                    cleanWorkspace = false
+                                }
+                                if (buildConfig.DOCKER_FILE) {
+                                    context.checkout context.scm
+                                    context.docker.build("build-image", "--build-arg image=${buildConfig.DOCKER_IMAGE} -f ${buildConfig.DOCKER_FILE} .").inside {    
+                                        buildScripts(cleanWorkspace, filename)
+                                    }
+                                } else {
                                     context.docker.image(buildConfig.DOCKER_IMAGE).pull()
                                     context.docker.image(buildConfig.DOCKER_IMAGE).inside {
-                                        // Cannot clean workspace from inside docker container
-                                        if (cleanWorkspace) {
-                                            try {
-                                                context.cleanWs notFailBuild: true
-                                            } catch (e) {
-                                                context.println "Failed to clean ${e}"
-                                            }
-                                            cleanWorkspace = false
-                                        }
                                         buildScripts(cleanWorkspace, filename)
                                     }
                                 }
                             }
+
                         } else {
                             if (NodeHelper.nodeIsOnline(buildConfig.NODE_LABEL)) {
                                 context.node(buildConfig.NODE_LABEL) {

@@ -23,17 +23,14 @@ class Config8 {
         x64Linux      : [
                 os                  : 'linux',
                 arch                : 'x64',
-                additionalNodeLabels: [
-                        openj9  : 'centos6'
-                ],
-                dockerImage         : [
-                        hotspot : 'adoptopenjdk/centos6_build_image'
+                dockerImage         : 'adoptopenjdk/centos6_build_image',
+                dockerFile: [
+                        openj9  : 'pipelines/build/dockerFiles/cuda.dockerfile'
                 ],
                 test                : ['sanity.openjdk', 'sanity.system', 'extended.system', 'sanity.perf', 'sanity.external', 'special.functional', 'special.openjdk'],
                 configureArgs       : [
                         "openj9"      : '--enable-jitserver'
-                ],
-                codebuild           : true
+                ]
         ],
 
         // Currently we have to be quite specific about which windows to use as not all of them have freetype installed
@@ -128,7 +125,10 @@ class Config8 {
 
         x64LinuxXL       : [
                 os                   : 'linux',
-                additionalNodeLabels : 'centos6',
+                dockerImage          : 'adoptopenjdk/centos6_build_image',
+                dockerFile: [
+                        openj9  : 'pipelines/build/dockerFiles/cuda.dockerfile'
+                ],
                 arch                 : 'x64',
                 additionalFileNameTag: "linuxXL",
                 configureArgs        : '--with-noncompressedrefs --enable-jitserver',

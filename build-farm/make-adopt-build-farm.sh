@@ -34,14 +34,14 @@ then
     do
         # Use Adopt API to get the JDK Head number
         echo "This appears to be JDK Head. Querying the Adopt API to get the JDK HEAD Number (https://api.adoptopenjdk.net/v3/info/available_releases)..."
-        JAVA_FEATURE_VERSION=$(curl -v https://api.adoptopenjdk.net/v3/info/available_releases | awk '/tip_version/{print$2}')
+        JAVA_FEATURE_VERSION=$(curl -q https://api.adoptopenjdk.net/v3/info/available_releases | awk '/tip_version/{print$2}')
         
         # Checks the api request was successful and the return value is a number
         if [ -z "${JAVA_FEATURE_VERSION}" ] || ! [[ "${JAVA_FEATURE_VERSION}" -gt 0 ]]
         then
             echo "RETRYWARNING: Query ${retryCount} failed. Retrying in 30 seconds (max retries = ${retryMax})..."
             retryCount=$((retryCount+1)) 
-            sleep 30000
+            sleep 30
         else
             echo "JAVA_FEATURE_VERSION FOUND: ${JAVA_FEATURE_VERSION}" && break
         fi
@@ -52,6 +52,7 @@ then
     then
         echo "Failed ${retryCount} times to query or parse the adopt api. Dumping headers via curl -v https://api.adoptopenjdk.net/v3/info/available_releases and exiting..."
         curl -v https://api.adoptopenjdk.net/v3/info/available_releases
+        echo curl returned RC $? in make_adopt_build_farm.sh
         exit 1
     fi
 fi
@@ -126,6 +127,11 @@ echo "TAG: ${TAG}"
 
 # shellcheck source=build-farm/set-platform-specific-configurations.sh
 source "${PLATFORM_SCRIPT_DIR}/set-platform-specific-configurations.sh"
+
+if [ "x${FILENAME}" = "x" ] ; then
+    echo "FILENAME must be set in the environment"
+    exit 1
+fi
 
 echo "Filename will be: $FILENAME"
 

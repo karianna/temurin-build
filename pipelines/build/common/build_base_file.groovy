@@ -60,6 +60,8 @@ class Builder implements Serializable {
 
         def dockerImage = getDockerImage(platformConfig, variant)
 
+        def dockerFile = getDockerFile(platformConfig, variant)
+
         def buildArgs = getBuildArgs(platformConfig, variant)
 
         if (additionalBuildArgs) {
@@ -79,6 +81,7 @@ class Builder implements Serializable {
                 NODE_LABEL: "${additionalNodeLabels}&&${platformConfig.os}&&${platformConfig.arch}",
                 CODEBUILD: platformConfig.codebuild as Boolean,
                 DOCKER_IMAGE: dockerImage,
+                DOCKER_FILE: dockerFile,
                 CONFIGURE_ARGS: getConfigureArgs(platformConfig, additionalConfigureArgs, variant),
                 OVERRIDE_FILE_NAME_VERSION: overrideFileNameVersion,
                 ADDITIONAL_FILE_NAME_TAG: platformConfig.additionalFileNameTag as String,
@@ -133,6 +136,18 @@ class Builder implements Serializable {
             }
         }
         return dockerImageValue
+    }
+
+    def getDockerFile(Map<String, ?> configuration, String variant) {
+        def dockerFileValue = ""
+        if (configuration.containsKey("dockerFile")) {
+            if (isMap(configuration.dockerFile)) {
+                dockerFileValue = (configuration.dockerFile as Map<String, ?>).get(variant)
+            } else {
+                dockerFileValue = configuration.dockerFile
+            }
+        }
+        return dockerFileValue
     }
 
     /**
@@ -229,11 +244,7 @@ class Builder implements Serializable {
             context.println "Querying Adopt Api for the JDK-Head number (tip_version)..."
 
             def response = JobHelper.getAvailableReleases(context)
-            Integer headVersion = Integer.valueOf(response.tip_version)
-            if (headVersion == null) {
-                context.println "Failure on api connection or parsing."
-                throw new Exception()
-            }
+            int headVersion = (int) response.getAt("tip_version")
             context.println "Found Java Version Number: ${headVersion}"
             return headVersion
         } else {
