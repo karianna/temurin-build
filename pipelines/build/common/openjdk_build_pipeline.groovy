@@ -3,6 +3,7 @@ import common.MetaData
 @Library('local-lib@master')
 import common.VersionInfo
 import groovy.json.*
+import java.nio.file.NoSuchFileException
 
 import java.util.regex.Matcher
 
@@ -46,6 +47,9 @@ class Build {
     final def env
     final def currentBuild
     VersionInfo versionInfo = null
+    String scmRef = ""
+    String fullVersionOutput = ""
+    String configureArguments = ""
 
     Build(IndividualBuildConfig buildConfig, def context, def env, def currentBuild) {
         this.buildConfig = buildConfig
@@ -154,7 +158,7 @@ class Build {
             String versionOutput = matcher.group('version')
             context.println(versionOutput)
 
-            return new VersionInfo().parse(consoleOut, versionOutput, buildConfig.ADOPT_BUILD_NUMBER)
+            return new VersionInfo().parse(versionOutput, buildConfig.ADOPT_BUILD_NUMBER)
         }
         return null
     }
@@ -217,7 +221,7 @@ class Build {
 
                     context.sh 'for file in $(ls workspace/target/*.tar.gz workspace/target/*.zip); do sha256sum "$file" > $file.sha256.txt ; done'
 
-                    writeMetadata(versionInfo)
+                    writeMetadata(versionInfo, false)
                     context.archiveArtifacts artifacts: "workspace/target/*"
                 }
             }
@@ -367,7 +371,7 @@ class Build {
                 if (buildConfig.TARGET_OS == "mac" || buildConfig.TARGET_OS == "windows") {
                     try {
                         context.sh 'for file in $(ls workspace/target/*.tar.gz workspace/target/*.pkg workspace/target/*.msi); do sha256sum "$file" > $file.sha256.txt ; done'
-                        writeMetadata(versionData)
+                        writeMetadata(versionData, false)
                         context.archiveArtifacts artifacts: "workspace/target/*"
                     } catch (e) {
                         context.println("Failed to build ${buildConfig.TARGET_OS} installer ${e}")
@@ -390,39 +394,100 @@ class Build {
                 .toList()
     }
 
-    MetaData formMetadata(VersionInfo version) {
-        return new MetaData(buildConfig.TARGET_OS, buildConfig.SCM_REF, version, buildConfig.JAVA_TO_BUILD, buildConfig.VARIANT, buildConfig.ARCHITECTURE)
+    MetaData formMetadata(VersionInfo version, Boolean initialWrite) {
+
+        // We have to setup some attributes for the first run since formMetadata is sometimes initiated from downstream job on master node with no access to the required files
+        if (initialWrite) {
+
+            // Get scmRef
+            context.println "INFO: FIRST METADATA WRITE OUT! Checking if we have a scm reference in the build config..."
+
+            String scmRefPath = "workspace/target/scmref.txt"
+            scmRef = buildConfig.SCM_REF
+
+            if (scmRef != "") {
+                // Use the buildConfig scmref if it is set
+                context.println "SUCCESS: SCM_REF has been set (${buildConfig.SCM_REF})! Using it to build the inital metadata over ${scmRefPath}..."
+            } else {
+                // If we don't have a scmref set in config, check if we have a scmref from the build
+                context.println "INFO: SCM_REF is NOT set. Attempting to read ${scmRefPath}..."
+                try {
+                    scmRef = context.readFile(scmRefPath).trim()
+                    context.println "SUCCESS: scmref.txt found: ${scmRef}"
+                } catch (NoSuchFileException e) {
+                    // In rare cases, we will fail to create the scmref.txt file
+                    context.println "WARNING: $scmRefPath was not found. Using build config SCM_REF instead (even if it's empty)..."
+                }
+
+            }
+
+            // Get full version output
+            String versionPath = "workspace/target/version.txt"
+            context.println "INFO: Attempting to read ${versionPath}..."
+
+            try {
+                fullVersionOutput = context.readFile(versionPath)
+                context.println "SUCCESS: version.txt found"
+            } catch (NoSuchFileException e) {
+                context.println "ERROR: ${versionPath} was not found. Exiting..."
+                throw new Exception()
+            }
+
+            // Get configure args
+            String configurePath = "workspace/target/configure.txt"
+            context.println "INFO: Attempting to read ${configurePath}..."
+
+            try {
+                configureArguments = context.readFile(configurePath)
+                context.println "SUCCESS: configure.txt found"
+            } catch (NoSuchFileException e) {
+                context.println "ERROR: ${configurePath} was not found. Exiting..."
+                throw new Exception()
+            }
+        }
+
+        return new MetaData(
+            buildConfig.TARGET_OS,
+            scmRef,
+            version,
+            buildConfig.JAVA_TO_BUILD,
+            buildConfig.VARIANT,
+            buildConfig.ARCHITECTURE,
+            fullVersionOutput,
+            configureArguments
+        )
+
     }
 
-    def writeMetadata(VersionInfo version) {
+    def writeMetadata(VersionInfo version, Boolean initialWrite) {
         /*
         example data:
             {
                 "WARNING": "THIS METADATA FILE IS STILL IN ALPHA DO NOT USE ME",
                 "os": "mac",
                 "arch": "x64",
-                "variant": "hotspot",
+                "variant": "openj9",
                 "version": {
                     "minor": 0,
-                    "full_version_output": "<output of java --version>",
                     "security": 0,
                     "pre": null,
                     "adopt_build_number": 0,
                     "major": 15,
-                    "version": "15+28-202006220910",
-                    "semver": "15.0.0+28.0.202006220910",
-                    "build": 28,
-                    "opt": "202006220910",
-                    "configure_arguments": <output of bash configure>
+                    "version": "15+29-202007070926",
+                    "semver": "15.0.0+29.0.202007070926",
+                    "build": 29,
+                    "opt": "202007070926"
                 },
-                "scmRef": "",
+                "scmRef": "<output of git describe OR buildConfig.SCM_REF>",
                 "version_data": "jdk15",
-                "binary_type": "jdk",
-                "sha256": "<shasum>"
+                "binary_type": "debugimage",
+                "sha256": "<shasum>",
+                "full_version_output": <output of java --version>,
+                "configure_arguments": <output of bash configure>
             }
         */
 
-        MetaData data = formMetadata(version)
+        MetaData data = initialWrite ? formMetadata(version, true) : formMetadata(version, false)
 
         listArchives().each({ file ->
             def type = "jdk"
@@ -506,9 +571,11 @@ class Build {
             if (cleanWorkspace) {
                 try {
                     if (buildConfig.TARGET_OS == "windows") {
-                        // Softlayer machines struggle to clean themselves
+                        // Windows machines struggle to clean themselves, see:
                         // https://github.com/AdoptOpenJDK/openjdk-build/issues/1855
                         context.sh(script: "rm -rf C:/workspace/openjdk-build/workspace/build/src/build/*/jdk/gensrc")
+                        // https://github.com/AdoptOpenJDK/openjdk-infrastructure/issues/1419
+                        context.sh(script: "rm -rf J:/jenkins/tmp/workspace/build/src/build/*/jdk/gensrc")
                         context.cleanWs notFailBuild: true, disableDeferredWipeout: true, deleteDirs: true
                     } else {
                         context.cleanWs notFailBuild: true
@@ -526,10 +593,8 @@ class Build {
                     String versionOut = context.readFile("workspace/target/version.txt")
 
                     versionInfo = parseVersionOutput(versionOut)
-
-                    versionInfo.configure_arguments = context.readFile("workspace/target/configure.txt")
                 }
-                writeMetadata(versionInfo)
+                writeMetadata(versionInfo, true)
                 context.archiveArtifacts artifacts: "workspace/target/*"
             } finally {
                 if (buildConfig.TARGET_OS == "aix") {
