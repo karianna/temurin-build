@@ -15,7 +15,7 @@ They are stored in the [utils](https://ci.adoptopenjdk.net/job/build-scripts/job
 There are three stages for each job regenerator. 
 - Execute the top level job: 
   - The jobs themselves are executed by Github Push on this repository. Each time there is a commit, all the pipeline regenerators are kicked off. This is so any potential changes to the [buildConfigurations](https://github.com/AdoptOpenJDK/openjdk-build/tree/master/pipelines/jobs/configurations) and [targetConfigurations](https://github.com/AdoptOpenJDK/openjdk-build/tree/master/pipelines/jobs/configurations) are taken into account when creating a job dsl for each downstream job.
-  - Each of the jobs executes it's corresponding [regeneration](https://github.com/AdoptOpenJDK/openjdk-build/tree/master/pipelines/build/regeneration) file, passing down it's version, targeted OS/ARCH/VARIANT and specific build configurations to the main [base]([config_regeneration](https://github.com/AdoptOpenJDK/openjdk-build/blob/master/pipelines/build/common/config_regeneration.groovy) file.
+  - Each of the jobs executes it's corresponding [regeneration](https://github.com/AdoptOpenJDK/openjdk-build/tree/master/pipelines/build/regeneration) file, passing down it's version, targeted OS/ARCH/VARIANT and specific build configurations to the main [config_regeneration](https://github.com/AdoptOpenJDK/openjdk-build/blob/master/pipelines/build/common/config_regeneration.groovy) file.
 - Check if the corresponding pipeline is in progress: 
   - Since we want to potentially avoid overwritting the job dsl's of any pipelines in progress, we use the [jenkins api](https://ci.adoptopenjdk.net/api/) to verify that there are no pipelines of that version queued or running. If there are, the job regenerator sleeps for 15mins and checks again afterwards. If not, it moves onto the next step.
 - Regenerate the downstream jobs, one at a time: 
@@ -74,4 +74,9 @@ Unreferenced items:
 [Pipeline] echo
 [SUCCESS] Regenerated configuration for job build-scripts/jobs/jdk/jdk-mac-x64-hotspot
 ```
-  
+
+# Build Pipeline Generator
+This generator generates the [top level](https://ci.adoptopenjdk.net/job/build-scripts/) pipeline jobs. It works by iterating through the config files, defining a job dsl configuration for each version that has a version config file. It then calls [pipeline_job_template.groovy](https://github.com/AdoptOpenJDK/openjdk-build/blob/master/pipelines/jobs/pipeline_job_template.groovy) to finalise the dsl. By default, the [job that runs this file](https://ci.adoptopenjdk.net/job/build-scripts/job/utils/job/build-pipeline-generator/) has restricted read access so you will likely need to contact a jenkins admin to see the results of the job.
+
+# Downstream Test Jobs
+The [downstream test jobs](https://ci.adoptopenjdk.net/view/Test_openjdk/) are generated separately from the build ones, via the [Test_Job_Auto_Gen](https://ci.adoptopenjdk.net/view/Test_grinder/job/Test_Job_Auto_Gen/), [testJobTemplate](https://github.com/AdoptOpenJDK/openjdk-tests/blob/master/buildenv/jenkins/testJobTemplate) and [testPipeline](https://github.com/AdoptOpenJDK/openjdk-tests/blob/master/buildenv/jenkins/wip/testpipeline.groovy) resources in the openjdk-tests repository.

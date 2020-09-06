@@ -387,6 +387,11 @@ buildTemplatedFile() {
     ADDITIONAL_MAKE_TARGETS=" test-image"
   fi
 
+  if [[ "${BUILD_CONFIG[MAKE_EXPLODED]}" == "true" ]]; then
+    # In order to make an exploded image we cannot have any additional targets
+    ADDITIONAL_MAKE_TARGETS=""
+  fi
+
   FULL_MAKE_COMMAND="${BUILD_CONFIG[MAKE_COMMAND_NAME]} ${BUILD_CONFIG[MAKE_ARGS_FOR_ANY_PLATFORM]} ${BUILD_CONFIG[USER_SUPPLIED_MAKE_ARGS]} ${ADDITIONAL_MAKE_TARGETS}"
 
   # shellcheck disable=SC2002
@@ -435,8 +440,7 @@ getGradleJavaHome() {
   fi
 
   if [ ! -d "$gradleJavaHome" ]; then
-    echo "Unable to find java to run gradle with, set JAVA_HOME, JDK8_BOOT_DIR or JDK11_BOOT_DIR: $gradleJavaHome">&2
-    exit 1
+    echo "[WARNING] Unable to find java to run gradle with, this build may fail with /bin/java: No such file or directory. Set JAVA_HOME, JDK8_BOOT_DIR or JDK11_BOOT_DIR to squash this warning: $gradleJavaHome">&2
   fi
 
   echo $gradleJavaHome
@@ -515,13 +519,14 @@ printJavaVersionString()
      elif [ "${ARCHITECTURE}" == "riscv64" ]; then
        # riscv is cross compiled, so we cannot run it on the build system
        # This is a temporary plausible solution in the absence of another fix
+       local jdkversion=$(getOpenJdkVersion)
        cat << EOT > "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/version.txt"
-openjdk version "11.0.0-internal" 2020-05-22
-OpenJDK Runtime Environment AdoptOpenJDK (build 11.0.0-internal+0-adhoc.jenkins.openj9-openjdk-jdk11)
-Eclipse OpenJ9 VM AdoptOpenJDK (build master-000000000, JRE 11 Linux riscv-64-Bit Compressed References 20200505_46 (JIT disabled, AOT disabled)
+openjdk version "${jdkversion%%+*}" "$(date +%Y-%m-%d)"
+OpenJDK Runtime Environment AdoptOpenJDK (build ${jdkversion%%+*}+0-$(date +%Y%m%d%H%M))
+Eclipse OpenJ9 VM AdoptOpenJDK (build master-000000000, JRE 11 Linux riscv-64-Bit Compressed References $(date +%Y%m%d)_00 (JIT disabled, AOT disabled)
 OpenJ9   - 000000000
 OMR      - 000000000
-JCL      - 000000000 based on jdk-11.0.0+0)
+JCL      - 000000000 based on ${jdkversion})
 EOT
      else
        # print version string around easy to find output
@@ -620,25 +625,32 @@ removingUnnecessaryFiles() {
   esac
   rm -rf "${dirToRemove}"/demo || true
 
-  # .diz files may be present on any platform
-  # Note that on AIX, find does not support the '-delete' option.
-  find "${jdkTargetPath}" "${jreTargetPath}" -type f -name "*.diz" | xargs rm -f || true
+  # In OpenJ9 builds, debug symbols are captured in the debug image:
+  # we don't want another copy of them in the main JDK or JRE archives.
+  # Builds for other variants don't normally include debug symbols,
+  # but if they were explicitly requested via the configure option
+  # '--with-native-debug-symbols=(external|zipped)' leave them alone.
+  if [[ "${BUILD_CONFIG[BUILD_VARIANT]}" == "${BUILD_VARIANT_OPENJ9}" ]] ; then
+    # .diz files may be present on any platform
+    # Note that on AIX, find does not support the '-delete' option.
+    find "${jdkTargetPath}" "${jreTargetPath}" -type f -name "*.diz" | xargs rm -f || true
 
-  case "${BUILD_CONFIG[OS_KERNEL_NAME]}" in
-    *cygwin*)
-      # on Windows, we want to remove .map and .pdb files
-      find "${jdkTargetPath}" "${jreTargetPath}" -type f -name "*.map" -delete || true
-      find "${jdkTargetPath}" "${jreTargetPath}" -type f -name "*.pdb" -delete || true
-      ;;
-    darwin)
-      # on MacOSX, we want to remove .dSYM folders
-      find "${jdkTargetPath}" "${jreTargetPath}" -type d -name "*.dSYM" | xargs -I "{}" rm -rf "{}"
-      ;;
-    *)
-      # on other platforms, we want to remove .debuginfo files
-      find "${jdkTargetPath}" "${jreTargetPath}" -type f -name "*.debuginfo" | xargs rm -f || true
-      ;;
-  esac
+    case "${BUILD_CONFIG[OS_KERNEL_NAME]}" in
+      *cygwin*)
+        # on Windows, we want to remove .map and .pdb files
+        find "${jdkTargetPath}" "${jreTargetPath}" -type f -name "*.map" -delete || true
+        find "${jdkTargetPath}" "${jreTargetPath}" -type f -name "*.pdb" -delete || true
+        ;;
+      darwin)
+        # on MacOSX, we want to remove .dSYM folders
+        find "${jdkTargetPath}" "${jreTargetPath}" -type d -name "*.dSYM" | xargs -I "{}" rm -rf "{}"
+        ;;
+      *)
+        # on other platforms, we want to remove .debuginfo files
+        find "${jdkTargetPath}" "${jreTargetPath}" -type f -name "*.debuginfo" | xargs rm -f || true
+        ;;
+    esac
+  fi
 
   echo "Finished removing unnecessary files from ${jdkTargetPath}"
 }
@@ -827,6 +839,16 @@ cd "${BUILD_CONFIG[WORKSPACE_DIR]}"
 
 parseArguments "$@"
 
+if [[ "${BUILD_CONFIG[ASSEMBLE_EXPLODED_IMAGE]}" == "true" ]]; then
+  buildTemplatedFile
+  executeTemplatedFile
+  removingUnnecessaryFiles
+  copyFreeFontForMacOS
+  createOpenJDKTarArchive
+  showCompletionMessage
+  exit 0
+fi
+
 buildSharedLibs
 
 wipeOutOldTargetDir
@@ -839,11 +861,13 @@ configureCommandParameters
 buildTemplatedFile
 executeTemplatedFile
 
-printJavaVersionString
+if [[ "${BUILD_CONFIG[MAKE_EXPLODED]}" != "true" ]]; then
+  printJavaVersionString
+  removingUnnecessaryFiles
+  copyFreeFontForMacOS
+  createOpenJDKTarArchive
+fi
 
-removingUnnecessaryFiles
-copyFreeFontForMacOS
-createOpenJDKTarArchive
 showCompletionMessage
 
 # ccache is not detected properly TODO

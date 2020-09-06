@@ -39,12 +39,14 @@ class Builder implements Serializable {
     String additionalConfigureArgs
     Map<String, List<String>> targetConfigurations
     Map<String, Map<String, ?>> buildConfigurations
+    Map<String, List<String>> dockerExcludes
     String scmReference
     String publishName
 
     boolean release
     boolean publish
     boolean enableTests
+    boolean enableInstallers
     boolean cleanWorkspaceBeforeBuild
     boolean propagateFailures
 
@@ -70,6 +72,12 @@ class Builder implements Serializable {
 
         def testList = getTestList(platformConfig)
 
+        // Always clean on mac due to https://github.com/AdoptOpenJDK/openjdk-build/issues/1980
+        def cleanWorkspace = cleanWorkspaceBeforeBuild
+        if (platformConfig.os == "mac") {
+            cleanWorkspace = true
+        }
+
         return new IndividualBuildConfig(
                 JAVA_TO_BUILD: javaToBuild,
                 ARCHITECTURE: platformConfig.arch as String,
@@ -90,7 +98,8 @@ class Builder implements Serializable {
                 PUBLISH_NAME: publishName,
                 ADOPT_BUILD_NUMBER: adoptBuildNumber,
                 ENABLE_TESTS: enableTests,
-                CLEAN_WORKSPACE: cleanWorkspaceBeforeBuild
+                ENABLE_INSTALLERS: enableInstallers,
+                CLEAN_WORKSPACE: cleanWorkspace
         )
     }
 
@@ -126,27 +135,56 @@ class Builder implements Serializable {
         return []
     }
 
+    def dockerOverride(Map<String, ?> configuration, String variant) {
+        Boolean overrideDocker = false
+        if (dockerExcludes == {}) {
+            return overrideDocker 
+        }
+
+        String stringArch = configuration.arch as String
+        String stringOs = configuration.os as String
+        String estimatedKey = stringArch + stringOs.capitalize()
+
+        if (configuration.containsKey("additionalFileNameTag")) {
+            estimatedKey = estimatedKey + "XL"
+        }
+
+        if (dockerExcludes.containsKey(estimatedKey)) {
+
+            if (dockerExcludes[estimatedKey].contains(variant)) {
+                overrideDocker = true
+            }
+
+        }
+
+        return overrideDocker
+    }
+
     def getDockerImage(Map<String, ?> configuration, String variant) {
         def dockerImageValue = ""
-        if (configuration.containsKey("dockerImage")) {
+
+        if (configuration.containsKey("dockerImage") && !dockerOverride(configuration, variant)) {
             if (isMap(configuration.dockerImage)) {
                 dockerImageValue = (configuration.dockerImage as Map<String, ?>).get(variant)
             } else {
                 dockerImageValue = configuration.dockerImage
             }
         }
+
         return dockerImageValue
     }
 
     def getDockerFile(Map<String, ?> configuration, String variant) {
         def dockerFileValue = ""
-        if (configuration.containsKey("dockerFile")) {
+
+        if (configuration.containsKey("dockerFile") && !dockerOverride(configuration, variant)) {
             if (isMap(configuration.dockerFile)) {
                 dockerFileValue = (configuration.dockerFile as Map<String, ?>).get(variant)
             } else {
                 dockerFileValue = configuration.dockerFile
             }
         }
+
         return dockerFileValue
     }
 
@@ -303,17 +341,16 @@ class Builder implements Serializable {
             tag = publishName
         }
 
-        context.node("master") {
-            context.stage("publish") {
-                context.build job: 'build-scripts/release/refactor_openjdk_release_tool',
-                        parameters: [
-                                ['$class': 'BooleanParameterValue', name: 'RELEASE', value: release],
-                                context.string(name: 'TAG', value: tag),
-                                context.string(name: 'TIMESTAMP', value: timestamp),
-                                context.string(name: 'UPSTREAM_JOB_NAME', value: env.JOB_NAME),
-                                context.string(name: 'UPSTREAM_JOB_NUMBER', value: "${currentBuild.getNumber()}"),
-                                context.string(name: 'VERSION', value: determineReleaseToolRepoVersion())]
-            }
+        context.stage("publish") {
+            context.build job: 'build-scripts/release/refactor_openjdk_release_tool',
+                    parameters: [
+                        ['$class': 'BooleanParameterValue', name: 'RELEASE', value: release],
+                        context.string(name: 'TAG', value: tag),
+                        context.string(name: 'TIMESTAMP', value: timestamp),
+                        context.string(name: 'UPSTREAM_JOB_NAME', value: env.JOB_NAME),
+                        context.string(name: 'UPSTREAM_JOB_NUMBER', value: "${currentBuild.getNumber()}"),
+                        context.string(name: 'VERSION', value: determineReleaseToolRepoVersion())
+                    ]
         }
     }
 
@@ -338,6 +375,7 @@ class Builder implements Serializable {
         context.echo "Java: ${javaToBuild}"
         context.echo "OS: ${targetConfigurations}"
         context.echo "Enable tests: ${enableTests}"
+        context.echo "Enable Installers: ${enableInstallers}"
         context.echo "Publish: ${publish}"
         context.echo "Release: ${release}"
         context.echo "Tag/Branch name: ${scmReference}"
@@ -413,7 +451,9 @@ return {
     String javaToBuild,
     Map<String, Map<String, ?>> buildConfigurations,
     String targetConfigurations,
+    String dockerExcludes,
     String enableTests,
+    String enableInstallers,
     String releaseType,
     String scmReference,
     String overridePublishName,
@@ -448,25 +488,32 @@ return {
             }
         }
 
+        def buildsExcludeDocker = [:]
+        if (dockerExcludes != "" && dockerExcludes != null) {
+            buildsExcludeDocker = new JsonSlurper().parseText(dockerExcludes) as Map
+        }
+
         return new Builder(
-                javaToBuild: javaToBuild,
-                buildConfigurations: buildConfigurations,
-                targetConfigurations: new JsonSlurper().parseText(targetConfigurations) as Map,
-                enableTests: Boolean.parseBoolean(enableTests),
-                publish: publish,
-                release: release,
-                scmReference: scmReference,
-                publishName: publishName,
-                additionalConfigureArgs: additionalConfigureArgs,
-                scmVars: scmVars,
-                additionalBuildArgs: additionalBuildArgs,
-                overrideFileNameVersion: overrideFileNameVersion,
-                cleanWorkspaceBeforeBuild: Boolean.parseBoolean(cleanWorkspaceBeforeBuild),
-                adoptBuildNumber: adoptBuildNumber,
-                propagateFailures: Boolean.parseBoolean(propagateFailures),
-                currentBuild: currentBuild,
-                context: context,
-                env: env
+            javaToBuild: javaToBuild,
+            buildConfigurations: buildConfigurations,
+            targetConfigurations: new JsonSlurper().parseText(targetConfigurations) as Map,
+            dockerExcludes: buildsExcludeDocker,
+            enableTests: Boolean.parseBoolean(enableTests),
+            enableInstallers: Boolean.parseBoolean(enableInstallers),
+            publish: publish,
+            release: release,
+            scmReference: scmReference,
+            publishName: publishName,
+            additionalConfigureArgs: additionalConfigureArgs,
+            scmVars: scmVars,
+            additionalBuildArgs: additionalBuildArgs,
+            overrideFileNameVersion: overrideFileNameVersion,
+            cleanWorkspaceBeforeBuild: Boolean.parseBoolean(cleanWorkspaceBeforeBuild),
+            adoptBuildNumber: adoptBuildNumber,
+            propagateFailures: Boolean.parseBoolean(propagateFailures),
+            currentBuild: currentBuild,
+            context: context,
+            env: env
         )
 
 }

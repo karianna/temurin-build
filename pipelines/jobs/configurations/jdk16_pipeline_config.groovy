@@ -23,8 +23,8 @@ class Config16 {
                         release: ['sanity.openjdk', 'sanity.system', 'extended.system', 'sanity.perf', 'sanity.external', 'special.functional']
                 ],
                 configureArgs       : [
-                        "openj9"      : '--disable-ccache --enable-dtrace --enable-jitserver',
-                        "hotspot"     : '--disable-ccache --enable-dtrace'
+                        "openj9"      : '--enable-dtrace --enable-jitserver',
+                        "hotspot"     : '--enable-dtrace'
                 ]
         ],
 
@@ -65,7 +65,7 @@ class Config16 {
                         nightly: false,
                         release: ['sanity.openjdk', 'sanity.system', 'extended.system', 'sanity.perf']
                 ],
-                configureArgs       : '--disable-ccache --enable-dtrace'
+                configureArgs       : '--enable-dtrace'
         ],
 
         ppc64leLinux    : [
@@ -76,8 +76,8 @@ class Config16 {
                         release: ['sanity.openjdk', 'sanity.system', 'extended.system', 'sanity.perf']
                 ],
                 configureArgs       : [
-                        "hotspot"     : '--disable-ccache --enable-dtrace',
-                        "openj9"      : '--disable-ccache --enable-dtrace --enable-jitserver'
+                        "hotspot"     : '--enable-dtrace',
+                        "openj9"      : '--enable-dtrace --enable-jitserver'
                 ]
 
         ],
@@ -85,7 +85,7 @@ class Config16 {
         aarch64Linux    : [
                 os                  : 'linux',
                 arch                : 'aarch64',
-                additionalNodeLabels: 'centos7',
+                dockerImage         : 'adoptopenjdk/centos7_build_image',
                 test                : [
                         nightly: false,
                         release: ['sanity.openjdk', 'sanity.system', 'extended.system', 'sanity.perf']

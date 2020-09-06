@@ -142,7 +142,7 @@ The following examples all use `-m1` as an example - this gets replaced with a l
 3. OpenJDK extensions branches the `openj9` branch to create the release branch, called `openj9-0.nn.0`
 4. Ask someone in the extensions team to make the following modifications:
    * Update [closed/get_j9_source.sh](https://github.com/ibmruntimes/openj9-openjdk-jdk11/blob/openj9/closed/get_j9_source.sh) (Link is for JDK11, chnage as appropriate!) to pull in Eclipse OpenJ9 & OMR milestone 1 tags e.g. `openj9-0.nn.0-m1`([Sample PR](https://github.com/ibmruntimes/openj9-openjdk-jdk11/commit/4607d33d99c566054261557fdf34bcbfaefc6480))
-   * Update custom-spec.gmk.in with correct `J9JDK_EXT_VERSION` for the release, [Sample commit for 11](https://github.com/ibmruntimes/openj9-openjdk-jdk8/commit/8512fe26e568962d4ee08f82f2f59d3bb241bb9d) and [Sample commit for 11](https://github.com/ibmruntimes/openj9-openjdk-jdk11/commit/c7964e29fea19a7803a86bc991de0d0e45547dc8) e.g:
+   * Update custom-spec.gmk.in with correct `J9JDK_EXT_VERSION` for the release, [Sample commit for 8](https://github.com/ibmruntimes/openj9-openjdk-jdk8/commit/8512fe26e568962d4ee08f82f2f59d3bb241bb9d) and [Sample commit for 11](https://github.com/ibmruntimes/openj9-openjdk-jdk11/commit/c7964e29fea19a7803a86bc991de0d0e45547dc8) e.g:
 ```
 jdk11+ ==> J9JDK_EXT_VERSION       := 11.0.5.0-m1
 jdk8     ==>  J9JDK_EXT_VERSION       := $(JDK_MINOR_VERSION).$(JDK_MICRO_VERSION).$(JDK_MOD_VERSION).$(JDK_FIX_VERSION)-m1
@@ -154,6 +154,7 @@ JDK_FIX_VERSION=0
    * `targetConfigurations`: remove all "hotspot" entries
    * `releaseType`: `Nightly`
    * `overridePublishName`: github binaries publish name, e.g. `jdk8u232-b09_openj9-0.17.0-m1` or `jdk-11.0.5+10_openj9-0.17.0-m1`
+   (Note: Everything before the underscore should be copied from the OPENJDK_TAG value inside <extensions_repo_url>/closed/openjdk-tag.gmk)
    * `scmReference`: extensions release branch: e.g. `openj9-0.17.0`
    * `additionalConfigureArgs`: JDK8: `--with-milestone=fcs`, JDK11+: `--without-version-pre --without-version-opt`
    * `enableTests`: "ticked"
@@ -179,7 +180,6 @@ JDK_FIX_VERSION=0
         - Create a New Item in the folder linked above that copies the `pipeline_jobs_generator_jdk` job. Call it `pipeline_jobs_generator_jdk<new-version-number>`. 
         - Change the `Script Path` setting of the new job to `pipelines/build/regeneration/jdk<new-version-number>_regeneration_pipeline.groovy`. Don't worry if this currently doesn't exist in this repo, you'll add it in step 3.
         - Update the `Script Path` setting of the JDK-HEAD job (`pipeline_jobs_generator_jdk`) to whatever the new JDK HEAD is. I.e. if the new head is JDK16, change `Script Path` to `pipelines/build/regeneration/jdk16_regeneration_pipeline.groovy`
-        - At some point the JDK N version will get to be maintained in an update repository. At that point a switch-over of job names from `jdkXX` to `jdkXXu` has to happen.
     * If you are REMOVING a JDK version: 
       - Delete the job `pipeline_jobs_generator_jdk<version-you-want-to-delete>`
   2. Create the new build configurations for the release - https://github.com/AdoptOpenJDK/openjdk-build/tree/master/pipelines/jobs/configurations: 
@@ -188,6 +188,23 @@ JDK_FIX_VERSION=0
   3. Create a new Regeneration Pipeline for the downstream jobs - https://github.com/AdoptOpenJDK/openjdk-build/tree/master/pipelines/build/regeneration: Create a new `jdk<new-version-number>_regeneration_pipeline.groovy`. Ensure that the `javaVersion`, `targetConfigurations` and `buildConfigurations` variables are what they should be for the new version. Don't remove any old version configs. While you're here, make sure all of the current releases have a `regeneration_pipeline.groovy` file (including head). If they don't, create one using the same technique as above.
   4. Build the `pipeline_jobs_generator` that you just made. Ensure the equivalant `openjdkxx_pipeline` to the generator exists or this will fail. If the job fails or is unstable, search the console log for `WARNING` or `ERROR` messages for why. Once it has completed successfully, the [pipeline](https://ci.adoptopenjdk.net/job/build-scripts/) is ready to go!
    
+### Update Repository
+At some point in a java version's lifecycle, the JDK version will be maintained in an update repository. The first notification of this will be via mail list in one of two places:
+- [jdk-dev](https://mail.openjdk.java.net/mailman/listinfo/jdk-dev)
+- [jdk-updates-dev](https://mail.openjdk.java.net/mailman/listinfo/jdk-updates-dev)
+When this occurs, usually a TSC member will create the `jdk<version>u` update repo ([example of the JDK11u one](https://github.com/AdoptOpenJDK/openjdk-jdk11u)) via our Skara mirroring jobs that pull in the commit and tag info from the Mercurial repository. To find out more about Skara and our other mirroring jobs, see https://github.com/AdoptOpenJDK/openjdk-build/tree/master/git-hg.
+
+When the repo has been created, a few changes to the codebase will be necessary where the code references a jdk version but not it's new update version. I.e. `jdk11` became `jdk11u` when it was moved to an update repository.
+
+*If a product is to be moved to an update repo, follow these steps in chronological order to ensure our builds continue to function:*
+1. Update the [configurations](https://github.com/AdoptOpenJDK/openjdk-build/tree/master/pipelines/jobs/configurations)
+  - Rename the nightly build targets file (it will be named `jdkxx.groovy`, [example here](https://github.com/AdoptOpenJDK/openjdk-build/blob/master/pipelines/jobs/configurations/jdk15.groovy)) to be `jdkxxu.groovy`. Do the same for the pipeline config file (named `jdkxx_pipeline_config.groovy`, [example here](https://github.com/AdoptOpenJDK/openjdk-build/blob/master/pipelines/jobs/configurations/jdk15_pipeline_config.groovy)).
+2. Update the `javaToBuild` from `jdkxx` to `jdkxxu` inside the [pipeline job](https://github.com/AdoptOpenJDK/openjdk-build/tree/master/pipelines/build) that is being shifted to an update repository.
+3. Update the `JDKXX_VERSION` from `jdkxx` to `jdkxxu` inside the [build script constants](https://github.com/AdoptOpenJDK/openjdk-build/blob/master/sbin/common/constants.sh) that is being shifted to an update repository.
+4. Update the jenkins jobs
+  - Rename the [job regenerator](https://ci.adoptopenjdk.net/job/build-scripts/job/utils/) that's version is being moved to an update repository from `pipeline_jobs_generator_jdkxx` to `pipeline_jobs_generator_jdkxxu`
+5. Finally, update the documentation to account for the changes you have just done. You can do this pretty easily by searching the repo for all occurrences of `jdkxx` using the following URL (replacing `xx` with the version number to change) and updating the locations where it would make sense to do so:
+  - https://github.com/AdoptOpenJDK/openjdk-build/search?q=jdkxx
 
 ## Summary on point releases
 

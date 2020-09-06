@@ -12,31 +12,41 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-def javaToBuild = "jdk15"
+def javaToBuild = "jdk15u"
+def scmVars = null
+Closure configureBuild = null
+def buildConfigurations = null
 
 node ("master") {
-    def scmVars = checkout scm
+    scmVars = checkout scm
     load "${WORKSPACE}/pipelines/build/common/import_lib.groovy"
-    Closure configureBuild = load "${WORKSPACE}/pipelines/build/common/build_base_file.groovy"
-    def buildConfigurations = load "${WORKSPACE}/pipelines/jobs/configurations/${javaToBuild}_pipeline_config.groovy"
+    configureBuild = load "${WORKSPACE}/pipelines/build/common/build_base_file.groovy"
+    buildConfigurations = load "${WORKSPACE}/pipelines/jobs/configurations/${javaToBuild}_pipeline_config.groovy"
+}
 
+if (scmVars != null && configureBuild != null && buildConfigurations != null) {
     configureBuild(
-            javaToBuild,
-            buildConfigurations,
-            targetConfigurations,
-            enableTests,
-            releaseType,
-            scmReference,
-            overridePublishName,
-            additionalConfigureArgs,
-            scmVars,
-            additionalBuildArgs,
-            overrideFileNameVersion,
-            cleanWorkspaceBeforeBuild,
-            adoptBuildNumber,
-            propagateFailures,
-            currentBuild,
-            this,
-            env
+        javaToBuild,
+        buildConfigurations,
+        targetConfigurations,
+        dockerExcludes,
+        enableTests,
+        enableInstallers,
+        releaseType,
+        scmReference,
+        overridePublishName,
+        additionalConfigureArgs,
+        scmVars,
+        additionalBuildArgs,
+        overrideFileNameVersion,
+        cleanWorkspaceBeforeBuild,
+        adoptBuildNumber,
+        propagateFailures,
+        currentBuild,
+        this,
+        env
     ).doBuild()
+} else {
+    println "[ERROR] One or more setup parameters are null.\nscmVars = ${scmVars}\nconfigureBuild = ${configureBuild}\nbuildConfigurations = ${buildConfigurations}"
+    throw new Exception()
 }

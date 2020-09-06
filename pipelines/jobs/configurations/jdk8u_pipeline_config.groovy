@@ -111,15 +111,13 @@ class Config8 {
         arm32Linux    : [
                 os  : 'linux',
                 arch: 'arm',
-                // TODO Temporarily remove the ARM tests because we don't have fast enough hardware
-                //test                : ['sanity.openjdk']
-                test: false
+                test                : ['sanity.openjdk']
         ],
 
         aarch64Linux  : [
                 os                  : 'linux',
                 arch                : 'aarch64',
-                additionalNodeLabels: 'centos7',
+                dockerImage         : 'adoptopenjdk/centos7_build_image',
                 test                : ['sanity.openjdk', 'sanity.system', 'extended.system', 'special.openjdk']
         ],
 
