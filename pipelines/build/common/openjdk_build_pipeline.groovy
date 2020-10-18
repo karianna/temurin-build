@@ -50,6 +50,13 @@ class Build {
     String scmRef = ""
     String fullVersionOutput = ""
     String configureArguments = ""
+    String j9Major = ""
+    String j9Minor = ""
+    String j9Security = ""
+    String j9Tags = ""
+    String vendorName = ""
+    String buildSource = ""
+    Map variantVersion = [:]
 
     Build(IndividualBuildConfig buildConfig, def context, def env, def currentBuild) {
         this.buildConfig = buildConfig
@@ -188,7 +195,8 @@ class Build {
 												context.string(name: 'UPSTREAM_JOB_NAME', value: "${env.JOB_NAME}"),
 												context.string(name: 'RELEASE_TAG', value: "${buildConfig.SCM_REF}"),
 												context.string(name: 'JDK_REPO', value: jdkRepo),
-												context.string(name: 'JDK_BRANCH', value: jdkBranch)]
+												context.string(name: 'JDK_BRANCH', value: jdkBranch),
+												context.string(name: 'ACTIVE_NODE_TIMEOUT', value: "${buildConfig.ACTIVE_NODE_TIMEOUT}")]
 							}
 						} else {
 							context.println "Requested test job that does not exist or is disabled: ${jobName}"
@@ -231,7 +239,7 @@ class Build {
                 if (buildConfig.TARGET_OS == "windows") {
                     filter = "**/OpenJDK*_windows_*.zip"
                     certificate = "C:\\openjdk\\windows.p12"
-                    nodeFilter = "${nodeFilter}&&build"
+                    nodeFilter = "${nodeFilter}&&build&&win2012"
 
                 } else if (buildConfig.TARGET_OS == "mac") {
                     filter = "**/OpenJDK*_mac_*.tar.gz"
@@ -457,7 +465,7 @@ class Build {
             // Get scmRef
             context.println "INFO: FIRST METADATA WRITE OUT! Checking if we have a scm reference in the build config..."
 
-            String scmRefPath = "workspace/target/scmref.txt"
+            String scmRefPath = "workspace/target/metadata/scmref.txt"
             scmRef = buildConfig.SCM_REF
 
             if (scmRef != "") {
@@ -476,8 +484,8 @@ class Build {
 
             }
 
-            // Get full version output
-            String versionPath = "workspace/target/version.txt"
+            // Get Full Version Output
+            String versionPath = "workspace/target/metadata/version.txt"
             context.println "INFO: Attempting to read ${versionPath}..."
 
             try {
@@ -488,8 +496,8 @@ class Build {
                 throw new Exception()
             }
 
-            // Get configure args
-            String configurePath = "workspace/target/configure.txt"
+            // Get Configure Args
+            String configurePath = "workspace/target/metadata/configure.txt"
             context.println "INFO: Attempting to read ${configurePath}..."
 
             try {
@@ -499,14 +507,90 @@ class Build {
                 context.println "ERROR: ${configurePath} was not found. Exiting..."
                 throw new Exception()
             }
+
+            // Get Variant Version for OpenJ9
+            if (buildConfig.VARIANT == "openj9") {
+                String j9MajorPath = "workspace/target/metadata/variant_version/major.txt"
+                String j9MinorPath = "workspace/target/metadata/variant_version/minor.txt"
+                String j9SecurityPath = "workspace/target/metadata/variant_version/security.txt"
+                String j9TagsPath = "workspace/target/metadata/variant_version/tags.txt"
+
+                context.println "INFO: Build variant openj9 detected..."
+
+                context.println "INFO: Attempting to read workspace/target/metadata/variant_version/major.txt..."
+                try {
+                    j9Major = context.readFile(j9MajorPath)
+                    context.println "SUCCESS: major.txt found"
+                } catch (NoSuchFileException e) {
+                    context.println "ERROR: ${j9MajorPath} was not found. Exiting..."
+                    throw new Exception()
+                }
+
+                context.println "INFO: Attempting to read workspace/target/metadata/variant_version/minor.txt..."
+                try {
+                    j9Minor = context.readFile(j9MinorPath)
+                    context.println "SUCCESS: minor.txt found"
+                } catch (NoSuchFileException e) {
+                    context.println "ERROR: ${j9MinorPath} was not found. Exiting..."
+                    throw new Exception()
+                }
+
+                context.println "INFO: Attempting to read workspace/target/metadata/variant_version/security.txt..."
+                try {
+                    j9Security = context.readFile(j9SecurityPath)
+                    context.println "SUCCESS: security.txt found"
+                } catch (NoSuchFileException e) {
+                    context.println "ERROR: ${j9SecurityPath} was not found. Exiting..."
+                    throw new Exception()
+                }
+
+                context.println "INFO: Attempting to read workspace/target/metadata/variant_version/tags.txt..."
+                try {
+                    j9Tags = context.readFile(j9TagsPath)
+                    context.println "SUCCESS: tags.txt found"
+                } catch (NoSuchFileException e) {
+                    context.println "ERROR: ${j9TagsPath} was not found. Exiting..."
+                    throw new Exception()
+                }
+
+                variantVersion = [major: j9Major, minor: j9Minor, security: j9Security, tags: j9Tags]
+            }
+
+            // Get Vendor
+            String vendorPath = "workspace/target/metadata/vendor.txt"
+            context.println "INFO: Attempting to read ${vendorPath}..."
+
+            try {
+                vendorName = context.readFile(vendorPath)
+                context.println "SUCCESS: vendor.txt found"
+            } catch (NoSuchFileException e) {
+                context.println "ERROR: ${vendorPath} was not found. Exiting..."
+                throw new Exception()
+            }
+
+            // Get Build Source
+            String buildSourcePath = "workspace/target/metadata/buildSource.txt"
+            context.println "INFO: Attempting to read ${buildSourcePath}..."
+
+            try {
+                buildSource = context.readFile(buildSourcePath)
+                context.println "SUCCESS: buildSource.txt found"
+            } catch (NoSuchFileException e) {
+                context.println "ERROR: ${buildSourcePath} was not found. Exiting..."
+                throw new Exception()
+            }
+        
         }
 
         return new MetaData(
+            vendorName,
             buildConfig.TARGET_OS,
             scmRef,
+            buildSource,
             version,
             buildConfig.JAVA_TO_BUILD,
             buildConfig.VARIANT,
+            variantVersion,
             buildConfig.ARCHITECTURE,
             fullVersionOutput,
             configureArguments
@@ -518,10 +602,16 @@ class Build {
         /*
         example data:
             {
-                "WARNING": "THIS METADATA FILE IS STILL IN ALPHA DO NOT USE ME",
+                "vendor": "AdoptOpenJDK",
                 "os": "mac",
                 "arch": "x64",
                 "variant": "openj9",
+                "variant_version": {
+                    "major": "0",
+                    "minor": "22",
+                    "security": "0",
+                    "tags": "m2"
+                },
                 "version": {
                     "minor": 0,
                     "security": 0,
@@ -534,6 +624,7 @@ class Build {
                     "opt": "202007070926"
                 },
                 "scmRef": "<output of git describe OR buildConfig.SCM_REF>",
+                "buildRef": "<build-repo-name/build-commit-sha>",
                 "version_data": "jdk15",
                 "binary_type": "debugimage",
                 "sha256": "<shasum>",
@@ -645,7 +736,7 @@ class Build {
                 envVars.add("FILENAME=${filename}" as String)
                 context.withEnv(envVars) {
                     context.sh(script: "./build-farm/make-adopt-build-farm.sh")
-                    String versionOut = context.readFile("workspace/target/version.txt")
+                    String versionOut = context.readFile("workspace/target/metadata/version.txt")
 
                     versionInfo = parseVersionOutput(versionOut)
                 }
@@ -656,6 +747,40 @@ class Build {
                     context.cleanWs notFailBuild: true
                 }
             }
+        }
+    }
+
+    def waitForANodeToBecomeActive(def label) {
+        def NodeHelper = context.library(identifier: 'openjdk-jenkins-helper@master').NodeHelper
+
+        if (NodeHelper.nodeIsOnline(label)) {
+            return
+        }
+
+        context.println("No active node matches this label: " + label)
+
+        int activeNodeTimeout = 0
+        if (buildConfig.ACTIVE_NODE_TIMEOUT.isInteger()) {
+            activeNodeTimeout = buildConfig.ACTIVE_NODE_TIMEOUT as Integer
+        }
+
+
+        if (activeNodeTimeout > 0) {
+            context.println("Will check again periodically until a node labelled " + label + " comes online, or " + buildConfig.ACTIVE_NODE_TIMEOUT + " minutes (ACTIVE_NODE_TIMEOUT) has passed.")
+            int x = 0
+            while (x < activeNodeTimeout) {
+                context.sleep(60 * 1000)  // 1 minute sleep
+                if (NodeHelper.nodeIsOnline(label)) {
+                    context.println("A node which matches this label is now active: " + label)
+                    return
+                }
+                x++
+            }
+            context.error("No node matching this label became active prior to the timeout: " + label)
+            throw new Exception()
+        } else {
+            context.error("As the timeout value is set to 0, we will not wait for a node to become active.")
+            throw new Exception()
         }
     }
 
@@ -678,8 +803,6 @@ class Build {
                     def cleanWorkspace = Boolean.valueOf(buildConfig.CLEAN_WORKSPACE)
 
                     context.stage("queue") {
-                        def NodeHelper = context.library(identifier: 'openjdk-jenkins-helper@master').NodeHelper
-
                         if (buildConfig.DOCKER_IMAGE) {
                             // Docker build environment
                             def label = buildConfig.NODE_LABEL + "&&dockerBuild"
@@ -690,6 +813,7 @@ class Build {
                             if (buildConfig.CODEBUILD) {
                                 label = "codebuild"
                             }
+
                             context.node(label) {
                                 // Cannot clean workspace from inside docker container
                                 if (cleanWorkspace) {
@@ -714,27 +838,23 @@ class Build {
                             }
 
                         } else {
-                            if (NodeHelper.nodeIsOnline(buildConfig.NODE_LABEL)) {
-                                context.node(buildConfig.NODE_LABEL) {
-                                    // This is to avoid windows path length issues.
-                                    context.echo("checking ${buildConfig.TARGET_OS}")
-                                    if (buildConfig.TARGET_OS == "windows") {
-                                        // See https://github.com/AdoptOpenJDK/openjdk-infrastructure/issues/1284#issuecomment-621909378 for justification of the below path
-                                        def workspace = "C:/workspace/openjdk-build/"
-                                        if (env.CYGWIN_WORKSPACE) {
-                                            workspace = env.CYGWIN_WORKSPACE
-                                        }
-                                        context.echo("changing ${workspace}")
-                                        context.ws(workspace) {
-                                            buildScripts(cleanWorkspace, filename)
-                                        }
-                                    } else {
+                            waitForANodeToBecomeActive(buildConfig.NODE_LABEL)
+                            context.node(buildConfig.NODE_LABEL) {
+                                // This is to avoid windows path length issues.
+                                context.echo("checking ${buildConfig.TARGET_OS}")
+                                if (buildConfig.TARGET_OS == "windows") {
+                                    // See https://github.com/AdoptOpenJDK/openjdk-infrastructure/issues/1284#issuecomment-621909378 for justification of the below path
+                                    def workspace = "C:/workspace/openjdk-build/"
+                                    if (env.CYGWIN_WORKSPACE) {
+                                        workspace = env.CYGWIN_WORKSPACE
+                                    }
+                                    context.echo("changing ${workspace}")
+                                    context.ws(workspace) {
                                         buildScripts(cleanWorkspace, filename)
                                     }
-                                }   
-                            } else {
-                                context.error("No node of this type exists: ${buildConfig.NODE_LABEL}")
-                                return
+                                } else {
+                                    buildScripts(cleanWorkspace, filename)
+                                }
                             }
                         }
                     }
