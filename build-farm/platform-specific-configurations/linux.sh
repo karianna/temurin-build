@@ -18,6 +18,9 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 # shellcheck source=sbin/common/constants.sh
 source "$SCRIPT_DIR/../../sbin/common/constants.sh"
 
+# Bundling our own freetype can cause problems, so we skip that on linux.
+export BUILD_ARGS="${BUILD_ARGS} --skip-freetype"
+
 if [ "${ARCHITECTURE}" == "x64" ]
 then
   export PATH=/opt/rh/devtoolset-2/root/usr/bin:$PATH
@@ -131,7 +134,12 @@ if [ "$JAVA_FEATURE_VERSION" -gt 11 ]; then
     "$JDK_BOOT_DIR/bin/java" -version 2>&1 | sed 's/^/BOOT JDK: /'
 fi
 
-if [ -r /usr/local/gcc/bin/gcc-7.5 ]; then
+if [ -r /usr/local/gcc/bin/gcc-9.2.0/bin/gcc ]; then
+  export PATH=/usr/local/gcc/bin/gcc-9.2.0/bin:$PATH
+  [ -r /usr/local/gcc/bin/gcc-9.2.0 ] && export CC=/usr/local/gcc/bin/gcc-9.2.0
+  [ -r /usr/local/gcc/bin/g++-9.2.0 ] && export CXX=/usr/local/gcc/bin/g++-9.2.0
+  export LD_LIBRARY_PATH=/usr/local/gcc/lib64:/usr/local/gcc/lib
+elif [ -r /usr/local/gcc/bin/gcc-7.5 ]; then
   export PATH=/usr/local/gcc/bin:$PATH
   [ -r /usr/local/gcc/bin/gcc-7.5 ] && export CC=/usr/local/gcc/bin/gcc-7.5
   [ -r /usr/local/gcc/bin/g++-7.5 ] && export CXX=/usr/local/gcc/bin/g++-7.5

@@ -364,6 +364,11 @@ configureCommandParameters() {
   echo "Configuring jvm variants if provided"
   addConfigureArgIfValueIsNotEmpty "--with-jvm-variants=" "${BUILD_CONFIG[JVM_VARIANT]}"
 
+  if [ "${BUILD_CONFIG[CUSTOM_CACERTS]}" != "false" ] ; then
+    echo "Configure custom cacerts file security/cacerts"
+    addConfigureArgIfValueIsNotEmpty "--with-cacerts-file=" "$SCRIPT_DIR/../security/cacerts"
+  fi
+
   # Now we add any platform-specific args after the configure args, so they can override if necessary.
   CONFIGURE_ARGS="${CONFIGURE_ARGS} ${BUILD_CONFIG[CONFIGURE_ARGS_FOR_ANY_PLATFORM]}"
 
@@ -538,18 +543,8 @@ printJavaVersionString() {
        exit -1
      elif [ "${ARCHITECTURE}" == "riscv64" ]; then
        # riscv is cross compiled, so we cannot run it on the build system
-       # This is a temporary plausible solution in the absence of another fix
-       local jdkversion=$(getOpenJdkVersion)
-       local jdkversionNoPrefix=${jdkversion#jdk-}
-       local jdkShortVersion=${jdkversionNoPrefix%%+*}
-       cat << EOT > "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/version.txt"
-openjdk version "${jdkShortVersion}" "$(date +%Y-%m-%d)"
-OpenJDK Runtime Environment AdoptOpenJDK (build ${jdkversionNoPrefix}-$(date +%Y%m%d%H%M))
-Eclipse OpenJ9 VM AdoptOpenJDK (build master-000000000, JRE 11 Linux riscv-64-Bit Compressed References $(date +%Y%m%d)_00 (JIT disabled, AOT disabled)
-OpenJ9   - 000000000
-OMR      - 000000000
-JCL      - 000000000 based on ${jdkversion})
-EOT
+       # So we leave it for now and retrive the version from a downstream job on riscv machine after the build
+       echo "Warning: java version can't be run on RISC-V build system. Faking version for now..."
      else
        # print version string around easy to find output
        # do not modify these strings as jenkins looks for them
@@ -785,6 +780,15 @@ makeACopyOfLibFreeFontForMacOSX() {
 #
 # Excluding "openj9" tag names as they have other ones for milestones etc. that get in the way
 getFirstTagFromOpenJDKGitRepo() {
+
+  # Save current directory of caller so we can return to that directory at the end of this function
+  # Some caller's are not in the git repo root, but instead build/*/images directory like the archive functions
+  # and any function called after removingUnnecessaryFiles()
+  local savePwd="${PWD}"
+
+  # Change to openjdk git repo root to find build tag
+  cd "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/${BUILD_CONFIG[OPENJDK_SOURCE_DIR]}"
+
   # JDK8 tag sorting:
   # Tag Format "jdk8uLLL-bBB"
   # cut chars 1-5 => LLL-bBB
@@ -832,6 +836,9 @@ getFirstTagFromOpenJDKGitRepo() {
   else
     echo "$firstMatchingNameFromRepo"
   fi
+
+  # Restore pwd
+  cd "$savePwd"
 }
 
 createArchive() {
@@ -1019,7 +1026,7 @@ addSemVer() { # Pulls the semantic version from the tag associated with the open
   local fullVer=$(getOpenJdkVersion)
   SEM_VER="$fullVer"
   if [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK8_CORE_VERSION}" ]; then
-    SEM_VER=$(echo "$semVer" | cut -c4- | awk -F'[-b0]+' '{print $1"+"$2}' | sed 's/u/.0./')
+    SEM_VER=$(echo "$SEM_VER" | cut -c4- | awk -F'[-b0]+' '{print $1"+"$2}' | sed 's/u/.0./')
   else
     SEM_VER=$(echo "$SEM_VER" | cut -c5-) # i.e. 11.0.2+12
   fi
