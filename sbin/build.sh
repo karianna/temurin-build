@@ -371,7 +371,9 @@ configureCommandParameters() {
 
   # Finally, we add any configure arguments the user has specified on the command line.
   # This is done last, to ensure the user can override any args they need to.
-  CONFIGURE_ARGS="${CONFIGURE_ARGS} ${BUILD_CONFIG[USER_SUPPLIED_CONFIGURE_ARGS]}"
+  # The substitution allows the user to pass in speech marks without having to guess
+  # at the number of escapes needed to ensure that they persist up to this point.
+  CONFIGURE_ARGS="${CONFIGURE_ARGS} ${BUILD_CONFIG[USER_SUPPLIED_CONFIGURE_ARGS]//temporary_speech_mark_placeholder/\"}"
 
   configureFreetypeLocation
 
@@ -382,8 +384,8 @@ configureCommandParameters() {
 stepIntoTheWorkingDirectory() {
   cd "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/${BUILD_CONFIG[OPENJDK_SOURCE_DIR]}" || exit
 
-  # corretto nest their source under /src in their dir
-  if [ "${BUILD_CONFIG[BUILD_VARIANT]}" == "${BUILD_VARIANT_CORRETTO}" ]; then
+  # corretto/corretto-8 (jdk-8 only) nest their source under /src in their dir
+  if [ "${BUILD_CONFIG[BUILD_VARIANT]}" == "${BUILD_VARIANT_CORRETTO}" ] && [ "${BUILD_CONFIG[OPENJDK_FEATURE_NUMBER]}" == "8" ]; then
     cd "src"
   fi
 
@@ -538,10 +540,10 @@ printJavaVersionString() {
 
        echo "Error 'java' does not exist in '$PRODUCT_HOME'."
        exit -1
-     elif [ "${ARCHITECTURE}" == "riscv64" ]; then
-       # riscv is cross compiled, so we cannot run it on the build system
-       # So we leave it for now and retrive the version from a downstream job on riscv machine after the build
-       echo "Warning: java version can't be run on RISC-V build system. Faking version for now..."
+     elif [ "${BUILD_CONFIG[CROSSCOMPILE]}" == "true" ]; then
+       # job is cross compiled, so we cannot run it on the build system
+       # So we leave it for now and retrive the version from a downstream job after the build
+       echo "Warning: java version can't be run on cross compiled build system. Faking version for now..."
      else
        # print version string around easy to find output
        # do not modify these strings as jenkins looks for them
