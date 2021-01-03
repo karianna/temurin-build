@@ -33,6 +33,7 @@ node (nodeLabel) {
                 println "UPSTREAM_JOB_NUMBER = ${jobNumber}"
                 println "JDK_FILE_FILTER = ${jdkFileFilter}"
                 println "FILENAME = ${fileName}"
+                println "OS = ${os}"
 
                 // Verify any previous binaries and versions have been cleaned out
                 if (fileExists('OpenJDKBinary')) {
@@ -64,10 +65,6 @@ node (nodeLabel) {
                     if (os == "windows") {
                         sh "unzip ${jdkFileFilter} && rm ${jdkFileFilter}"
                     } else {
-                        // Add pwd and ls -la commands to debug if ${jdkFileFilter} isn't there after the copyArtifacts step above
-                        sh "pwd"
-                        sh "ls -la"
-                        // This will exit if ${jdkFileFilter} doesn't exist
                         sh "tar -zxvf ${jdkFileFilter} && rm ${jdkFileFilter}"
                     }
 
