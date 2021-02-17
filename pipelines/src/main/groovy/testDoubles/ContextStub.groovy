@@ -57,6 +57,10 @@ class ContextStub {
 
     ContextStub pull() {}
 
+    String minus(String s) {}
+
+    String split(String s) {}
+
     String getResult() {}
 
     Integer getNumber() {}
@@ -71,13 +75,21 @@ class ContextStub {
 
     String checkout(String s) {}
 
+    String step(Map<String, ?> s) {}
+
     String checkout(Map<String, ?> s) {}
 
     String writeFile(Map s) {}
 
     Closure<CustomScript> load(String s) {}
 
-    String readFile(String s) {}
+    String readFile(String file) {}
+
+    Map<String, ?> readJSON(String file) {}
+
+    String entrySet() {}
+
+    String remove() {}
 
     String ws(String s, Closure) {}
 

@@ -378,7 +378,7 @@ configureCommandParameters() {
   echo "Configuring jvm variants if provided"
   addConfigureArgIfValueIsNotEmpty "--with-jvm-variants=" "${BUILD_CONFIG[JVM_VARIANT]}"
 
-  if [ "${BUILD_CONFIG[CUSTOM_CACERTS]}" != "false" ] ; then
+  if [ "${BUILD_CONFIG[CUSTOM_CACERTS]}" = "true" ] ; then
     echo "Configure custom cacerts file security/cacerts"
     addConfigureArgIfValueIsNotEmpty "--with-cacerts-file=" "$SCRIPT_DIR/../security/cacerts"
   fi
@@ -444,11 +444,15 @@ executeTemplatedFile() {
 
   echo "Currently at '${PWD}'"
 
+  # We need the exitcode from the configure-and-build.sh script
+  set +eu
+
   # Execute the build passing the workspace dir and target dir as params for configure.txt
   bash "${BUILD_CONFIG[WORKSPACE_DIR]}/config/configure-and-build.sh" ${BUILD_CONFIG[WORKSPACE_DIR]} ${BUILD_CONFIG[TARGET_DIR]}
   exitCode=$?
 
-  if [ "${exitCode}" -eq 1 ]; then
+  if [ "${exitCode}" -eq 3 ]; then
+    createOpenJDKFailureLogsArchive
     echo "Failed to make the JDK, exiting"
     exit 1
   elif [ "${exitCode}" -eq 2 ]; then
@@ -459,6 +463,42 @@ executeTemplatedFile() {
     exit 2
   fi
 
+  # Restore exit behavior
+  set -eu
+}
+
+createOpenJDKFailureLogsArchive() {
+    echo "OpenJDK make failed, archiving make failed logs"
+    cd build/*
+
+    local adoptLogArchiveDir="AdoptOpenJDKLogsArchive"
+
+    # Create new folder for failure logs
+    rm -rf ${adoptLogArchiveDir}
+    mkdir ${adoptLogArchiveDir}
+
+    # Copy build and failure logs
+    if [[ -f "build.log" ]]; then
+      echo "Copying build.log to ${adoptLogArchiveDir}"
+      cp build.log ${adoptLogArchiveDir}
+    fi
+    if [[ -d "make-support/failure-logs" ]]; then
+      echo "Copying make-support/failure-logs to ${adoptLogArchiveDir}"
+      mkdir -p "${adoptLogArchiveDir}/make-support"
+      cp -r "make-support/failure-logs" "${adoptLogArchiveDir}/make-support"
+    fi
+
+    # Find any cores, dumps, ..
+    find . -name 'core.*' -name 'core.*.dmp' -o -name 'javacore.*.txt' -o -name 'Snap.*.trc' -o -name 'jitdump.*.dmp' | sed 's#^./##' | while read -r dump ; do
+      filedir=$(dirname "${dump}")
+      echo "Copying ${dump} to ${adoptLogArchiveDir}/${filedir}"
+      mkdir -p "${adoptLogArchiveDir}/${filedir}"
+      cp "${dump}" "${adoptLogArchiveDir}/${filedir}"
+    done
+
+    # Archive logs
+    local makeFailureLogsName=$(echo "${BUILD_CONFIG[TARGET_FILE_NAME]//-jdk/-makefailurelogs}")
+    createArchive "${adoptLogArchiveDir}" "${makeFailureLogsName}"
 }
 
 getGradleJavaHome() {
@@ -495,26 +535,6 @@ getGradleUserHome() {
   fi
 
   echo $gradleUserHome
-}
-
-buildSharedLibs() {
-  cd "${LIB_DIR}"
-
-  local gradleJavaHome=$(getGradleJavaHome)
-  local gradleUserHome=$(getGradleUserHome)
-
-  echo "Running gradle with $gradleJavaHome at $gradleUserHome"
-
-  gradlecount=1
-  while ! JAVA_HOME="$gradleJavaHome" GRADLE_USER_HOME="$gradleUserHome" bash ./gradlew --no-daemon clean shadowJar; do
-    echo "RETRYWARNING: Gradle failed on attempt $gradlecount"
-    sleep 120s # Wait before retrying in case of network/server outage ...
-    gradlecount=$((gradlecount + 1))
-    [ $gradlecount -gt 3 ] && exit 1
-  done
-
-  # Test that the parser can execute as fail fast rather than waiting till after the build to find out
-  "$gradleJavaHome"/bin/java -version 2>&1 | "$gradleJavaHome"/bin/java -cp "target/libs/adopt-shared-lib.jar" ParseVersion -s -f semver 1
 }
 
 parseJavaVersionString() {
@@ -892,11 +912,6 @@ createOpenJDKTarArchive() {
   createArchive "${jdkTargetPath}" "${BUILD_CONFIG[TARGET_FILE_NAME]}"
 }
 
-# Echo success
-showCompletionMessage() {
-  echo "All done!"
-}
-
 copyFreeFontForMacOS() {
   local jdkTargetPath=$(getJdkArchivePath)
   local jreTargetPath=$(getJreArchivePath)
@@ -962,7 +977,8 @@ addInfoToReleaseFile() {
 
 addHeapSize() { # Adds an identifier for heap size on OpenJ9 builds
   local heapSize=""
-  if [[ $($JAVA_LOC -version 2>&1 | grep 'Compressed References') ]]; then
+  local architecture=$($JAVA_LOC -XshowSettings:properties -version 2>&1 | grep 'os.arch' | sed 's/^.*= //' | tr -d '\r') # Heap size must be standard for x86 builds (openjdk-build/2412)
+  if [[ $($JAVA_LOC -version 2>&1 | grep 'Compressed References') ]] || [[ "$architecture" == "x86" ]]; then
     heapSize="Standard"
   else
     heapSize="Large"
@@ -1114,17 +1130,20 @@ if [[ "${BUILD_CONFIG[ASSEMBLE_EXPLODED_IMAGE]}" == "true" ]]; then
   exit 0
 fi
 
-buildSharedLibs
-
+echo "build.sh : $(date +%T) : Clearing out target dir ..."
 wipeOutOldTargetDir
 createTargetDir
 
+echo "build.sh : $(date +%T) : Configuring workspace inc. clone and cacerts generation ..."
 configureWorkspace
 
+echo "build.sh : $(date +%T) : Initiating build ..."
 getOpenJDKUpdateAndBuildVersion
 configureCommandParameters
 buildTemplatedFile
 executeTemplatedFile
+
+echo "build.sh : $(date +%T) : Build complete ..."
 
 if [[ "${BUILD_CONFIG[MAKE_EXPLODED]}" != "true" ]]; then
   printJavaVersionString
@@ -1135,7 +1154,7 @@ if [[ "${BUILD_CONFIG[MAKE_EXPLODED]}" != "true" ]]; then
   createOpenJDKTarArchive
 fi
 
-showCompletionMessage
+echo "build.sh : $(date +%T) : All done!"
 
 # ccache is not detected properly TODO
 # change grep to something like $GREP -e '^1.*' -e '^2.*' -e '^3\.0.*' -e '^3\.1\.[0123]$'`]
