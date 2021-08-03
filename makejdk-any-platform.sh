@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC1091
 
 ################################################################################
 #
@@ -52,6 +53,9 @@ echo "Starting $0 to configure, build (Adopt)OpenJDK binary"
 # see ${SCRIPT_DIR}/sbin/common/config_init.sh for details
 configure_build "$@"
 writeConfigToFile
+
+# Store params to this script as "buildinfo"
+echo "$@" > ./workspace/config/makejdk-any-platform.args
 
 # Let's build and test the (Adopt) OpenJDK binary in Docker or natively
 if [ "${BUILD_CONFIG[USE_DOCKER]}" == "true" ] ; then

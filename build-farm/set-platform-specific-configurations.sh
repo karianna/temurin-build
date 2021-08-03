@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC1090,SC1091
 
 ################################################################################
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -32,7 +33,7 @@ then
     # Fail build if a local file doesn't exist and network location hasn't been set
     if [ -z "${PLATFORM_CONFIG_LOCATION}" ]
     then
-        echo "[ERROR] No local file detected at ${PLATFORM_CONFIG_FILEPATH} and PLATFORM_CONFIG_LOCATION is not set. Please set PLATFORM_CONFIG_LOCATION to a repository path of a platform config file (e.g. AdoptOpenJDK/openjdk-build/master/build-farm/platform-specific-configurations)."
+        echo "[ERROR] No local file detected at ${PLATFORM_CONFIG_FILEPATH} and PLATFORM_CONFIG_LOCATION is not set. Please set PLATFORM_CONFIG_LOCATION to a repository path of a platform config file (e.g. adoptium/temurin-build/master/build-farm/platform-specific-configurations)."
         exit 3
     fi
 
@@ -63,7 +64,7 @@ then
         curl "${rawGithubSource}/$1/$2" > "${PLATFORM_CONFIG_FILEPATH}"
         ret=$?
         # A download will succeed if location is a directory, so we also check the contents are valid
-        fileContents=$(cat $PLATFORM_CONFIG_FILEPATH)
+        fileContents=$(cat "$PLATFORM_CONFIG_FILEPATH")
         set -e
     }
 
