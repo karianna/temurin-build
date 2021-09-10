@@ -48,6 +48,7 @@ COPY_MACOSX_FREE_FONT_LIB_FOR_JDK_FLAG
 COPY_MACOSX_FREE_FONT_LIB_FOR_JRE_FLAG
 COPY_TO_HOST
 CREATE_DEBUG_IMAGE
+CREATE_SOURCE_ARCHIVE
 CUSTOM_CACERTS
 CROSSCOMPILE
 DEBUG_DOCKER
@@ -233,6 +234,9 @@ function parseConfigurationArguments() {
 
         "--create-debug-image" )
         BUILD_CONFIG[CREATE_DEBUG_IMAGE]="true";;
+
+        "--create-source-archive" )
+        BUILD_CONFIG[CREATE_SOURCE_ARCHIVE]=true;;
 
         "--disable-adopt-branch-safety" )
         BUILD_CONFIG[DISABLE_ADOPT_BRANCH_SAFETY]=true;;
@@ -447,13 +451,16 @@ function configDefaults() {
   # The default behavior of whether we want to create a separate debug symbols archive
   BUILD_CONFIG[CREATE_DEBUG_IMAGE]="false"
 
+  # The default behavior of whether we want to create a separate source archive
+  BUILD_CONFIG[CREATE_SOURCE_ARCHIVE]="false"
+
   BUILD_CONFIG[SIGN]="false"
   BUILD_CONFIG[JDK_BOOT_DIR]=""
 
   BUILD_CONFIG[MACOSX_CODESIGN_IDENTITY]=${BUILD_CONFIG[MACOSX_CODESIGN_IDENTITY]:-""}
 
   BUILD_CONFIG[NUM_PROCESSORS]="1"
-  BUILD_CONFIG[TARGET_FILE_NAME]="OpenJDK.tar.gz"
+  BUILD_CONFIG[TARGET_FILE_NAME]="OpenJDK-jdk.tar.gz"
 
   # Dir where we clone the OpenJDK source code for building, defaults to 'src'
   BUILD_CONFIG[OPENJDK_SOURCE_DIR]="src"
