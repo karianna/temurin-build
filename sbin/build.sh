@@ -254,7 +254,8 @@ configureVersionStringParameter() {
 
     if [ "${BUILD_CONFIG[BUILD_VARIANT]}" == "${BUILD_VARIANT_HOTSPOT}" ]; then
 
-      addConfigureArg "--with-company-name=" "\"Eclipse Adoptium\""
+      # NOTE: There maybe a behavioural difference with this config depending on the jdk8u source branch you're working with.
+      addConfigureArg "--with-company-name=" "\"Temurin\""
 
       # No JFR support in AIX or zero builds (s390 or armv7l)
       if [ "${BUILD_CONFIG[OS_ARCHITECTURE]}" != "s390x" ] && [ "${BUILD_CONFIG[OS_KERNEL_NAME]}" != "aix" ] && [ "${BUILD_CONFIG[OS_ARCHITECTURE]}" != "armv7l" ]; then
@@ -482,7 +483,7 @@ buildTemplatedFile() {
   if [[ "${BUILD_CONFIG[BUILD_VARIANT]}" == "${BUILD_VARIANT_OPENJ9}" ]]; then
     ADDITIONAL_MAKE_TARGETS=" test-image debug-image"
   elif [ "$JDK_VERSION_NUMBER" -gt 8 ] || [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDKHEAD_VERSION}" ]; then
-    ADDITIONAL_MAKE_TARGETS=" test-image"
+    ADDITIONAL_MAKE_TARGETS=" test-image static-libs-image"
   fi
 
   if [[ "${BUILD_CONFIG[MAKE_EXPLODED]}" == "true" ]]; then
@@ -508,14 +509,21 @@ createSourceArchive() {
   local sourceArchiveTargetPath="$(getSourceArchivePath)"
   local tmpSourceVCS="${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/tmp-openjdk-git"
   local srcArchiveName
-  if echo ${BUILD_CONFIG[TARGET_FILE_NAME]} | grep -q hotspot; then
+  if echo ${BUILD_CONFIG[TARGET_FILE_NAME]} | grep -q hotspot -; then
     # Transform 'OpenJDK11U-jdk_aarch64_linux_hotspot_11.0.12_7.tar.gz' to 'OpenJDK11U-sources_11.0.12_7.tar.gz'
-    srcArchiveName=$(echo "${BUILD_CONFIG[TARGET_FILE_NAME]//-jdk_*(?)_hotspot_/-sources_}")
+    # shellcheck disable=SC2001
+    srcArchiveName="$(echo "${BUILD_CONFIG[TARGET_FILE_NAME]}" | sed 's/-jdk_.*_hotspot_/-sources_/g')"
   else
     srcArchiveName=$(echo "${BUILD_CONFIG[TARGET_FILE_NAME]//-jdk/-sources}")
   fi
 
   local oldPwd="${PWD}"
+  echo "Source archive name is going to be: ${srcArchiveName}"
+  if ! echo "${srcArchiveName}" | grep -q '-sources' -; then
+     echo "Error: Unexpected source archive name! Expected '-sources' in name."
+     echo "       Source archive name was: ${srcArchiveName}"
+     exit 1
+  fi
   cd "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}"
   echo "Temporarily moving VCS source dir to ${tmpSourceVCS}"
   mv "${sourceDir}/.git" "${tmpSourceVCS}"
@@ -719,12 +727,18 @@ getDebugImageArchivePath() {
   echo "${jdkArchivePath}-debug-image"
 }
 
+getStaticLibsArchivePath() {
+  local jdkArchivePath=$(getJdkArchivePath)
+  echo "${jdkArchivePath}-static-libs"
+}
+
 # Clean up
 removingUnnecessaryFiles() {
   local jdkTargetPath=$(getJdkArchivePath)
   local jreTargetPath=$(getJreArchivePath)
   local testImageTargetPath=$(getTestImageArchivePath)
   local debugImageTargetPath=$(getDebugImageArchivePath)
+  local staticLibsImageTargetPath=$(getStaticLibsArchivePath)
 
   echo "Removing unnecessary files now..."
 
@@ -739,24 +753,78 @@ removingUnnecessaryFiles() {
   rm -rf "${jdkTargetPath}" || true
   mv "${jdkPath}" "${jdkTargetPath}"
 
-  if [ -d "$(ls -d ${BUILD_CONFIG[JRE_PATH]})" ]; then
-    echo "moving $(ls -d ${BUILD_CONFIG[JRE_PATH]}) to ${jreTargetPath}"
-    rm -rf "${jreTargetPath}" || true
-    mv "$(ls -d ${BUILD_CONFIG[JRE_PATH]})" "${jreTargetPath}"
+# Don't produce a JRE for JDK16 and above
+  if [ "${BUILD_CONFIG[OPENJDK_FEATURE_NUMBER]}" -lt 16 ]; then
+    if [ -d "$(ls -d ${BUILD_CONFIG[JRE_PATH]})" ]; then
+      echo "moving $(ls -d ${BUILD_CONFIG[JRE_PATH]}) to ${jreTargetPath}"
+      rm -rf "${jreTargetPath}" || true
+      mv "$(ls -d ${BUILD_CONFIG[JRE_PATH]})" "${jreTargetPath}"
 
-    case "${BUILD_CONFIG[OS_KERNEL_NAME]}" in
-    "darwin") dirToRemove="${jreTargetPath}/Contents/Home" ;;
-    *) dirToRemove="${jreTargetPath}" ;;
-    esac
-    rm -rf "${dirToRemove}"/demo || true
+      case "${BUILD_CONFIG[OS_KERNEL_NAME]}" in
+      "darwin") dirToRemove="${jreTargetPath}/Contents/Home" ;;
+      *) dirToRemove="${jreTargetPath}" ;;
+      esac
+      rm -rf "${dirToRemove}"/demo || true
+    fi
   fi
 
-  # Test image - check if the config is set and directory exists
+  # Test image - check if the directory exists
   local testImagePath="${BUILD_CONFIG[TEST_IMAGE_PATH]}"
   if [ -n "${testImagePath}" ] && [ -d "${testImagePath}" ]; then
     echo "moving ${testImagePath} to ${testImageTargetPath}"
     rm -rf "${testImageTargetPath}" || true
     mv "${testImagePath}" "${testImageTargetPath}"
+  fi
+
+  # Static libs image - check if the directory exists
+  local staticLibsImagePath="${BUILD_CONFIG[STATIC_LIBS_IMAGE_PATH]}"
+  local osArch
+  local staticLibsDir
+  if [ -n "${staticLibsImagePath}" ] && [ -d "${staticLibsImagePath}" ]; then
+    # Create a directory structure recognized by the GraalVM build
+    # For example:
+    #   Linux: lib/static/linux-amd64/glibc/
+    #   Darwin: Contents/Home/lib/static/darwin-amd64/
+    #   Windows: lib/static/windows-amd64/
+    #
+    osArch="${BUILD_CONFIG[OS_ARCHITECTURE]}"
+    if [ "${BUILD_CONFIG[OS_ARCHITECTURE]}" = "x86_64" ]; then
+      osArch="amd64"
+    fi
+    pushd ${staticLibsImagePath}
+      case "${BUILD_CONFIG[OS_KERNEL_NAME]}" in
+      *cygwin*)
+        # on Windows the expected layout is: lib/static/windows-amd64/
+        staticLibsDir="lib/static/windows-${osArch}"
+        ;;
+      darwin)
+        # on MacOSX the layout is: Contents/Home/lib/static/darwin-amd64/
+        staticLibsDir="Contents/Home/lib/static/darwin-${osArch}"
+        ;;
+      linux)
+        # on Linux the layout is: lib/static/linux-amd64/glibc
+        local cLib="glibc"
+        # shellcheck disable=SC2001
+        local libcVendor=$(ldd --version 2>&1 | sed -n '1s/.*\(musl\).*/\1/p')
+        if [ "${libcVendor}" = "musl" ]; then
+          cLib="musl"
+        fi
+        staticLibsDir="lib/static/linux-${osArch}/${cLib}"
+        ;;
+      *)
+        # on other platforms default to lib/static/<os>-<arch>
+        staticLibsDir="lib/static/${BUILD_CONFIG[OS_KERNEL_NAME]}-${osArch}"
+        ;;
+      esac
+      echo "Creating directory structure for static libs '${staticLibsDir}'"
+      mv "$(ls -d -- *)" "static-libs-dir-tmp"
+      mkdir -p "${staticLibsDir}"
+      mv static-libs-dir-tmp/* "${staticLibsDir}"
+      rm -rf "static-libs-dir-tmp"
+    popd
+    echo "moving ${staticLibsImagePath} to ${staticLibsImageTargetPath}"
+    rm -rf "${staticLibsImageTargetPath}" || true
+    mv "${staticLibsImagePath}" "${staticLibsImageTargetPath}"
   fi
 
   # Debug image - check if the config is set and directory exists
@@ -1164,12 +1232,17 @@ createOpenJDKTarArchive() {
   local jreTargetPath=$(getJreArchivePath)
   local testImageTargetPath=$(getTestImageArchivePath)
   local debugImageTargetPath=$(getDebugImageArchivePath)
+  local staticLibsImageTargetPath=$(getStaticLibsArchivePath)
 
   echo "OpenJDK JDK path will be ${jdkTargetPath}. JRE path will be ${jreTargetPath}"
 
   if [ -d "${jreTargetPath}" ]; then
     # shellcheck disable=SC2001
     local jreName=$(echo "${BUILD_CONFIG[TARGET_FILE_NAME]}" | sed 's/-jdk/-jre/')
+    # for macOS system, code sign directory before creating tar.gz file
+    if [ "${BUILD_CONFIG[OS_KERNEL_NAME]}" == "darwin" ] && [ -n "${BUILD_CONFIG[MACOSX_CODESIGN_IDENTITY]}" ]; then
+      codesign --options runtime --timestamp --sign "${BUILD_CONFIG[MACOSX_CODESIGN_IDENTITY]}" "${jreTargetPath}"
+    fi
     createArchive "${jreTargetPath}" "${jreName}"
   fi
   if [ -d "${testImageTargetPath}" ]; then
@@ -1182,31 +1255,62 @@ createOpenJDKTarArchive() {
     local debugImageName=$(echo "${BUILD_CONFIG[TARGET_FILE_NAME]//-jdk/-debugimage}")
     createArchive "${debugImageTargetPath}" "${debugImageName}"
   fi
+  if [ -d "${staticLibsImageTargetPath}" ]; then
+    echo "OpenJDK static libs path will be ${staticLibsImageTargetPath}."
+    local staticLibsTag="-static-libs"
+    if [ "${BUILD_CONFIG[OS_KERNEL_NAME]}" = "linux" ]; then
+      # on Linux there might be glibc and musl variants of this
+      local cLib="glibc"
+      # shellcheck disable=SC2001
+      local libcVendor=$(ldd --version 2>&1 | sed -n '1s/.*\(musl\).*/\1/p')
+      if [ "${libcVendor}" = "musl" ]; then
+        cLib="musl"
+      fi
+      staticLibsTag="${staticLibsTag}-${cLib}"
+    fi
+    # shellcheck disable=SC2001
+    local staticLibsImageName=$(echo "${BUILD_CONFIG[TARGET_FILE_NAME]}" | sed "s/-jdk/${staticLibsTag}/g")
+    echo "OpenJDK static libs archive file name will be ${staticLibsImageName}."
+    createArchive "${staticLibsImageTargetPath}" "${staticLibsImageName}"
+  fi
+  # for macOS system, code sign directory before creating tar.gz file
+  if [ "${BUILD_CONFIG[OS_KERNEL_NAME]}" == "darwin" ] && [ -n "${BUILD_CONFIG[MACOSX_CODESIGN_IDENTITY]}" ]; then
+    codesign --options runtime --timestamp --sign "${BUILD_CONFIG[MACOSX_CODESIGN_IDENTITY]}" "${jdkTargetPath}"
+  fi
   createArchive "${jdkTargetPath}" "${BUILD_CONFIG[TARGET_FILE_NAME]}"
 }
 
 copyFreeFontForMacOS() {
   local jdkTargetPath=$(getJdkArchivePath)
-  local jreTargetPath=$(getJreArchivePath)
-
   makeACopyOfLibFreeFontForMacOSX "${jdkTargetPath}" "${BUILD_CONFIG[COPY_MACOSX_FREE_FONT_LIB_FOR_JDK_FLAG]}"
-  makeACopyOfLibFreeFontForMacOSX "${jreTargetPath}" "${BUILD_CONFIG[COPY_MACOSX_FREE_FONT_LIB_FOR_JRE_FLAG]}"
+
+  # Don't produce a JRE for JDK16 and above
+  if [ "${BUILD_CONFIG[OPENJDK_FEATURE_NUMBER]}" -lt 16 ]; then
+    local jreTargetPath=$(getJreArchivePath)
+    makeACopyOfLibFreeFontForMacOSX "${jreTargetPath}" "${BUILD_CONFIG[COPY_MACOSX_FREE_FONT_LIB_FOR_JRE_FLAG]}"
+  fi
 }
 
 setPlistForMacOS() {
   local jdkTargetPath=$(getJdkArchivePath)
-  local jreTargetPath=$(getJreArchivePath)
-
   setPlistValueForMacOS "${jdkTargetPath}" "jdk"
-  setPlistValueForMacOS "${jreTargetPath}" "jre"
+
+  # Don't produce a JRE for JDK16 and above
+  if [ "${BUILD_CONFIG[OPENJDK_FEATURE_NUMBER]}" -lt 16 ]; then
+    local jreTargetPath=$(getJreArchivePath)
+    setPlistValueForMacOS "${jreTargetPath}" "jre"
+  fi
 }
 
 addNoticeFile() {
   local jdkTargetPath=$(getJdkArchivePath)
-  local jreTargetPath=$(getJreArchivePath)
-
   createNoticeFile "${jdkTargetPath}" "jdk"
-  createNoticeFile "${jreTargetPath}" "jre"
+
+  # Don't produce a JRE for JDK16 and above
+  if [ "${BUILD_CONFIG[OPENJDK_FEATURE_NUMBER]}" -lt 16 ]; then
+    local jreTargetPath=$(getJreArchivePath)
+    createNoticeFile "${jreTargetPath}" "jre"
+  fi
 }
 
 wipeOutOldTargetDir() {
@@ -1259,8 +1363,11 @@ addInfoToReleaseFile() {
     echo "ADDING J9 TAG"
     addJ9Tag
   fi
-  echo "MIRRORING TO JRE"
-  mirrorToJRE
+   # Don't produce a JRE for JDK16 and above
+  if [ "${BUILD_CONFIG[OPENJDK_FEATURE_NUMBER]}" -lt 16 ]; then
+    echo "MIRRORING TO JRE"
+    mirrorToJRE
+  fi
   echo "ADDING IMAGE TYPE"
   addImageType
   echo "===RELEASE FILE GENERATED==="
@@ -1325,7 +1432,7 @@ addBuildOS() {
   local buildVer="Unknown"
   if [ "${BUILD_CONFIG[OS_KERNEL_NAME]}" == "darwin" ]; then
     buildOS=$(sw_vers | sed -n 's/^ProductName:[[:blank:]]*//p')
-    buildVer=$(sw_vers | tail -n 2 | awk '{print $2}')
+    buildVer=$(sw_vers | tail -n 2 | awk '{print $2}' | tr '\n' '\0' | xargs -0)
   elif [ "${BUILD_CONFIG[OS_KERNEL_NAME]}" == "linux" ]; then
     buildOS=$(uname -s)
     buildVer=$(uname -r)
@@ -1383,7 +1490,10 @@ mirrorToJRE() {
 
 addImageType() {
   echo -e IMAGE_TYPE=\"JDK\" >>"$PRODUCT_HOME/release"
-  echo -e IMAGE_TYPE=\"JRE\" >>"$JRE_HOME/release"
+  # Don't produce a JRE for JDK16 and above
+  if [ "${BUILD_CONFIG[OPENJDK_FEATURE_NUMBER]}" -lt 16 ]; then
+    echo -e IMAGE_TYPE=\"JRE\" >>"$JRE_HOME/release"
+  fi
 }
 
 addInfoToJson(){

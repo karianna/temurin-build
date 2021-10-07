@@ -4,6 +4,11 @@ on:
   pull_request:
     branches: [ master ]
 
+# Cancel existing runs if user makes another push.
+concurrency:
+  group: "${{ github.ref }}"
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build_linux:
     name: Linux
@@ -14,7 +19,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [linux]
-        version: [jdk8u, jdk11u, jdk16u, jdk17, jdk]
+        version: [jdk8u, jdk11u, jdk16u, jdk17u, jdk]
         vm: [hotspot]
         image: [adoptopenjdk/centos7_build_image]
         include:
@@ -23,7 +28,7 @@ jobs:
             vm: hotspot
             image: adoptopenjdk/alpine3_build_image
           - os: alpine-linux
-            version: jdk17
+            version: jdk17u
             vm: hotspot
             image: adoptopenjdk/alpine3_build_image
           - os: alpine-linux
