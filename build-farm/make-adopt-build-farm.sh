@@ -25,7 +25,7 @@ PLATFORM_SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 if [ -z "$ARCHITECTURE"  ]; then
    ARCHITECTURE=$(uname -p)
-   if [ "$OSTYPE"       = "cygwin"  ]; then ARCHITECTURE=$(uname -m); fi # Windows
+   if [ "$OSTYPE" = "cygwin"  ] || [ "${ARCHITECTURE}" = "unknown" ]; then ARCHITECTURE=$(uname -m); fi # Windows / Alpine
    if [ "$ARCHITECTURE" = "x86_64"  ]; then ARCHITECTURE=x64;        fi # Linux/x64
    if [ "$ARCHITECTURE" = "i386"    ]; then ARCHITECTURE=x64;        fi # Solaris/x64 and mac/x64
    if [ "$ARCHITECTURE" = "sparc"   ]; then ARCHITECTURE=sparcv9;    fi # Solaris/SPARC
@@ -40,9 +40,10 @@ fi
 ## so needs to be special cased - on everthing else "uname" is valid
 if [ -z "$TARGET_OS" ]; then
   TARGET_OS=$(uname)
-  if [ "$OSTYPE"    = "cygwin" ]; then TARGET_OS=windows ; fi
-  if [ "$TARGET_OS" = "SunOS"  ]; then TARGET_OS=solaris ; fi
-  if [ "$TARGET_OS" = "Darwin" ]; then TARGET_OS=mac     ; fi
+  if [ "$OSTYPE"    = "cygwin" ]; then TARGET_OS=windows     ; fi
+  if [ "$TARGET_OS" = "SunOS"  ]; then TARGET_OS=solaris     ; fi
+  if [ "$TARGET_OS" = "Darwin" ]; then TARGET_OS=mac         ; fi
+  if [ -r /etc/alpine-release  ]; then TARGET_OS=alpine-linux; fi
   echo TARGET_OS not defined - assuming you want "$TARGET_OS"
   export TARGET_OS
 fi
@@ -93,8 +94,8 @@ then
     retryMax=5
     until [ "$retryCount" -ge "$retryMax" ]
     do
-        # Use Adopt API to get the JDK Head number
-        echo "This appears to be JDK Head. Querying the Adopt API to get the JDK HEAD Number (https://api.adoptium.net/v3/info/available_releases)..."
+        # Use Adoptium API to get the JDK Head number
+        echo "This appears to be JDK Head. Querying the Adoptium API to get the JDK HEAD Number (https://api.adoptium.net/v3/info/available_releases)..."
         JAVA_FEATURE_VERSION=$(curl -q https://api.adoptium.net/v3/info/available_releases | awk '/tip_version/{print$2}')
 
         # Checks the api request was successful and the return value is a number
@@ -111,7 +112,7 @@ then
     # Fail build if we still can't find the head number
     if [ -z "${JAVA_FEATURE_VERSION}" ] || ! [[ "${JAVA_FEATURE_VERSION}" -gt 0 ]]
     then
-        echo "Failed ${retryCount} times to query or parse the adopt api. Dumping headers via curl -v https://api.adoptium.net/v3/info/available_releases and exiting..."
+        echo "Failed ${retryCount} times to query or parse the Adoptium api. Dumping headers via curl -v https://api.adoptium.net/v3/info/available_releases and exiting..."
         curl -v https://api.adoptium.net/v3/info/available_releases
         echo curl returned RC $? in make_adopt_build_farm.sh
         exit 1
