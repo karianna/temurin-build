@@ -154,6 +154,16 @@ function writeConfigToFile() {
   displayParams | sed 's/\r$//' > ./workspace/config/built_config.cfg
 }
 
+function createConfigToJsonString() {
+  jsonString="{ "
+  for K in "${!BUILD_CONFIG[@]}";
+  do
+    jsonString+="\"${PARAM_LOOKUP[$K]}\" : \"${BUILD_CONFIG[$K]}\", "
+  done
+  jsonString+=" \"Data Source\" : \"BUILD_CONFIG hashmap\"}"
+  echo "${jsonString}"
+}
+
 function loadConfigFromFile() {
   if [ -f "$SCRIPT_DIR/../config/built_config.cfg" ]
   then
@@ -401,6 +411,11 @@ function configDefaults() {
       if grep "^VERSION=" /etc/os-release; then
         local osVersion=$(grep "^VERSION=" /etc/os-release | cut -d= -f2 | tr -d '"')
         unameOSSysVer="${unameOSSysVer} ${osVersion}"
+      fi
+      # Improve Version Reporting For Alpine Linux ( Issue #2997 )
+      if [ "${osName}" == "Alpine Linux" ]; then
+        osName=$(grep "^PRETTY_NAME=" /etc/os-release | cut -d= -f2 | tr -d '"')
+        unameOSSysVer="${osName}"
       fi
     fi
   elif [ "${unameSys}" == "AIX" ]; then

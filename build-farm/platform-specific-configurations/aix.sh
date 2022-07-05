@@ -15,8 +15,16 @@
 # limitations under the License.
 ################################################################################
 
-
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+# Clear out /tmp/sh-np files if we're running in jenkins to avoid
+# "ambiguous redirect" pipe failures. This will be ok with only one executor
+# See https://github.com/adoptium/infrastructure/issues/929
+if [ "$(whoami)" = "jenkins" ] && [ -n "$WORKSPACE" ]; then
+   echo "There are $(/usr/bin/find /tmp \( -user jenkins -a -name sh-np.\* \) | wc -l) sh-np files owned by jenkins in /tmp that I am going to remove..."
+   /usr/bin/find /tmp \( -user jenkins -a -name sh-np.\* \) | xargs rm -f
+fi
+
 
 # AIX default ulimit is frequently less than we need to clone the LTS JDK repositories
 FILESIZELIMIT=$(ulimit)
@@ -73,7 +81,7 @@ if [ ! -d "$(eval echo "\$$BOOT_JDK_VARIABLE")" ]; then
     elif [ "$JDK_BOOT_VERSION" -ge 8 ]; then # Adoptium has no build pre-8
       mkdir -p "${bootDir}"
       releaseType="ga"
-      apiUrlTemplate="https://api.adoptium.net/v3/binary/latest/\${JDK_BOOT_VERSION}/\${releaseType}/aix/\${ARCHITECTURE}/jdk/hotspot/normal/adoptium"
+      apiUrlTemplate="https://api.adoptium.net/v3/binary/latest/\${JDK_BOOT_VERSION}/\${releaseType}/aix/\${ARCHITECTURE}/jdk/hotspot/normal/eclipse"
       apiURL=$(eval echo ${apiUrlTemplate})
       echo "Downloading GA release of boot JDK version ${JDK_BOOT_VERSION} from ${apiURL}"
       # make-adopt-build-farm.sh has 'set -e'. We need to disable that for

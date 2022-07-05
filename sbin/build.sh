@@ -44,6 +44,8 @@ source "$SCRIPT_DIR/common/constants.sh"
 # shellcheck source=sbin/common/common.sh
 source "$SCRIPT_DIR/common/common.sh"
 
+source "$SCRIPT_DIR/common/sbom.sh"
+
 export LIB_DIR=$(crossPlatformRealPath "${SCRIPT_DIR}/../pipelines/")
 export CYCLONEDB_DIR="${SCRIPT_DIR}/../cyclonedx-lib"
 
@@ -133,6 +135,15 @@ getOpenJDKUpdateAndBuildVersion() {
   fi
 
   cd "${BUILD_CONFIG[WORKSPACE_DIR]}"
+}
+
+patchFreetypeWindows() {
+  # Allows freetype to be built for JDK8u with Visual Studio 2017 (see https://github.com/openjdk/jdk8u-dev/pull/3#issuecomment-1087677766)
+  if [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK8_CORE_VERSION}" ] && [ "${ARCHITECTURE}" = "x64" ]; then
+    rm "${BUILD_CONFIG[WORKSPACE_DIR]}/libs/freetype/builds/windows/vc2010/freetype.vcxproj"
+    # Copy the replacement freetype.vcxproj file from the .github directory
+    cp "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/${BUILD_CONFIG[OPENJDK_SOURCE_DIR]}/.github/workflows/freetype.vcxproj" "${BUILD_CONFIG[WORKSPACE_DIR]}/libs/freetype/builds/windows/vc2010/freetype.vcxproj"
+  fi
 }
 
 getOpenJdkVersion() {
@@ -616,8 +627,8 @@ createOpenJDKFailureLogsArchive() {
     createArchive "${adoptLogArchiveDir}" "${makeFailureLogsName}"
 }
 
-# Build the CycloneDX Java library and app used for SBoM generation
-buildCyclonedxLib() {
+# Setup JAVA env to run "ant task"
+setupAntEnv() {
   local javaHome=""
 
   if [ ${JAVA_HOME+x} ] && [ -d "${JAVA_HOME}" ]; then
@@ -626,12 +637,19 @@ buildCyclonedxLib() {
     javaHome=${JDK8_BOOT_DIR}
   elif [ ${JDK11_BOOT_DIR+x} ] && [ -d "${JDK11_BOOT_DIR}" ]; then
     javaHome=${JDK11_BOOT_DIR}
-  elif [ ${BUILD_CONFIG[JDK_BOOT_DIR]+x} ] && [ -d "${BUILD_CONFIG[JDK_BOOT_DIR]}" ]; then # fall back to use JDK_BOOT_DIR which is set in make-adopt-build-farm.sh
+  elif [ ${BUILD_CONFIG[JDK_BOOT_DIR]+x} ] && [ -d "${BUILD_CONFIG[JDK_BOOT_DIR]}" ]; then
+  # fall back to use JDK_BOOT_DIR which is set in make-adopt-build-farm.sh
     javaHome="${BUILD_CONFIG[JDK_BOOT_DIR]}"
   else
     echo "Unable to find a suitable JAVA_HOME to build the cyclonedx-lib"
     exit 2
   fi
+  echo "${javaHome}"
+}
+
+# Build the CycloneDX Java library and app used for SBoM generation
+buildCyclonedxLib() {
+  local javaHome="${1}"
 
   # Make Ant aware of cygwin path
   if [[ "$OSTYPE" == "cygwin" ]] || [[ "$OSTYPE" == "msys" ]]; then
@@ -645,31 +663,19 @@ buildCyclonedxLib() {
 
 # Generate the SBoM
 generateSBoM() {
-  local javaHome=""
-
-  if [ ${JAVA_HOME+x} ] && [ -d "${JAVA_HOME}" ]; then
-    javaHome=${JAVA_HOME}
-  elif [ ${JDK8_BOOT_DIR+x} ] && [ -d "${JDK8_BOOT_DIR}" ]; then
-    javaHome=${JDK8_BOOT_DIR}
-  elif [ ${JDK11_BOOT_DIR+x} ] && [ -d "${JDK11_BOOT_DIR}" ]; then
-    javaHome=${JDK11_BOOT_DIR}
-  elif [ ${BUILD_CONFIG[JDK_BOOT_DIR]+x} ] && [ -d "${BUILD_CONFIG[JDK_BOOT_DIR]}" ]; then # fall back to use JDK_BOOT_DIR which is set in make-adopt-build-farm.sh
-    javaHome="${BUILD_CONFIG[JDK_BOOT_DIR]}"
-  else
-    echo "Unable to find a suitable JAVA_HOME to run the TemurinGenSBOM app"
-    exit 2
-  fi
+  local javaHome="${1}"
 
   # classpath to run CycloneDX java app TemurinGenSBOM
-  classpath="${CYCLONEDB_DIR}/build/jar/temurin-gen-sbom.jar:${CYCLONEDB_DIR}/build/jar/cyclonedx-core-java.jar:${CYCLONEDB_DIR}/build/jar/jackson-core.jar:${CYCLONEDB_DIR}/build/jar/jackson-dataformat-xml.jar:${CYCLONEDB_DIR}/build/jar/jackson-databind.jar:${CYCLONEDB_DIR}/build/jar/jackson-annotations.jar:${CYCLONEDB_DIR}/build/jar/json-schema.jar:${CYCLONEDB_DIR}/build/jar/commons-codec.jar:${CYCLONEDB_DIR}/build/jar/commons-io.jar:${CYCLONEDB_DIR}/build/jar/github-package-url.jar"
+  CYCLONEDB_JAR_DIR="${CYCLONEDB_DIR}/build/jar"
+  classpath="${CYCLONEDB_JAR_DIR}/temurin-gen-sbom.jar:${CYCLONEDB_JAR_DIR}/cyclonedx-core-java.jar:${CYCLONEDB_JAR_DIR}/jackson-core.jar:${CYCLONEDB_JAR_DIR}/jackson-dataformat-xml.jar:${CYCLONEDB_JAR_DIR}/jackson-databind.jar:${CYCLONEDB_JAR_DIR}/jackson-annotations.jar:${CYCLONEDB_JAR_DIR}/json-schema.jar:${CYCLONEDB_JAR_DIR}/commons-codec.jar:${CYCLONEDB_JAR_DIR}/commons-io.jar:${CYCLONEDB_JAR_DIR}/github-package-url.jar"
   sbomJson="${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/sbom.json"
   if [[ "$OSTYPE" == "cygwin" ]] || [[ "$OSTYPE" == "msys" ]]; then
     classpath=""
-    for jarfile in "${CYCLONEDB_DIR}/build/jar/temurin-gen-sbom.jar" "${CYCLONEDB_DIR}/build/jar/cyclonedx-core-java.jar" \
-      "${CYCLONEDB_DIR}/build/jar/jackson-core.jar" "${CYCLONEDB_DIR}/build/jar/jackson-dataformat-xml.jar" \
-      "${CYCLONEDB_DIR}/build/jar/jackson-databind.jar" "${CYCLONEDB_DIR}/build/jar/jackson-annotations.jar" \
-      "${CYCLONEDB_DIR}/build/jar/json-schema.jar" "${CYCLONEDB_DIR}/build/jar/commons-codec.jar" "${CYCLONEDB_DIR}/build/jar/commons-io.jar" \
-      "${CYCLONEDB_DIR}/build/jar/github-package-url.jar" ;
+    for jarfile in "${CYCLONEDB_JAR_DIR}/temurin-gen-sbom.jar" "${CYCLONEDB_JAR_DIR}/cyclonedx-core-java.jar" \
+      "${CYCLONEDB_JAR_DIR}/jackson-core.jar" "${CYCLONEDB_JAR_DIR}/jackson-dataformat-xml.jar" \
+      "${CYCLONEDB_JAR_DIR}/jackson-databind.jar" "${CYCLONEDB_JAR_DIR}/jackson-annotations.jar" \
+      "${CYCLONEDB_JAR_DIR}/json-schema.jar" "${CYCLONEDB_JAR_DIR}/commons-codec.jar" "${CYCLONEDB_JAR_DIR}/commons-io.jar" \
+      "${CYCLONEDB_JAR_DIR}/github-package-url.jar" ;
     do
       classpath+=$(cygpath -w "${jarfile}")";"
     done
@@ -686,52 +692,50 @@ generateSBoM() {
   local fullVerOutput=$($JAVA_LOC -version 2>&1)
 
   # Create initial SBOM json
-  "${javaHome}"/bin/java -cp "${classpath}" temurin.sbom.TemurinGenSBOM --verbose --createNewSBOM --jsonFile "$sbomJson" --name "${BUILD_CONFIG[BUILD_VARIANT]^}" --version "$fullVer"
+  createSBOMFile "${javaHome}" "${classpath}" "${sbomJson}"
+  # Set default SBOM metadata
+  addSBOMMetadata "${javaHome}" "${classpath}" "${sbomJson}"
 
-  # Add Metadata object
-  "${javaHome}"/bin/java -cp "${classpath}" temurin.sbom.TemurinGenSBOM --verbose --addMetadata --jsonFile "$sbomJson" --name "${BUILD_CONFIG[BUILD_VARIANT]^}"
+  # Create component to metadata in SBOM
+  addSBOMMetadataComponent "${javaHome}" "${classpath}" "${sbomJson}" "Eclipse Temurin" "framework" "${fullVer}" "Temurin JDK Component"
 
-  # Add JDK Component
-  "${javaHome}"/bin/java -cp "${classpath}" temurin.sbom.TemurinGenSBOM --addComponent --jsonFile "$sbomJson" --compName "JDK" --description "${BUILD_CONFIG[BUILD_VARIANT]^} JDK Component"
+  # Below add property to metadata
+  # Add OS full version (Kernel is covered in the first field)
+  addSBOMMetadataProperty "${javaHome}" "${classpath}" "${sbomJson}" "OS version" "${BUILD_CONFIG[OS_FULL_VERSION]^}"
+  addSBOMMetadataProperty "${javaHome}" "${classpath}" "${sbomJson}" "OS architecture" "${BUILD_CONFIG[OS_ARCHITECTURE]^}"
+  addSBOMMetadataProperty "${javaHome}" "${classpath}" "${sbomJson}" "Use Docker for build" "${BUILD_CONFIG[USE_DOCKER]^}"
 
-  # Add scmRef JDK Component Property
-  addSBOMComponentPropertyFromFile "${javaHome}" "${classpath}" "${sbomJson}" "JDK" "scmRef" "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/scmref.txt"
+  # Create JDK Component
+  addSBOMComponent "${javaHome}" "${classpath}" "${sbomJson}" "Eclipse Temurin" "${fullVer}" "${BUILD_CONFIG[BUILD_VARIANT]^} JDK Component"
 
-  # Add OpenJDK source ref commit JDK Component Property
-  addSBOMComponentPropertyFromFile "${javaHome}" "${classpath}" "${sbomJson}" "JDK" "openjdkSourceCommit" "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/openjdkSource.txt"
-
-  # Add buildRef JDK Component Property
-  addSBOMComponentPropertyFromFile "${javaHome}" "${classpath}" "${sbomJson}" "JDK" "buildRef" "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/buildSource.txt"
-
-  # Add builtConfig JDK Component Property
-  addSBOMComponentPropertyFromFile "${javaHome}" "${classpath}" "${sbomJson}" "JDK" "builtConfig" "${BUILD_CONFIG[WORKSPACE_DIR]}/config/built_config.cfg"
-
+  # Below add different properties to JDK component
+  # Add variant as JDK Component Property
+  addSBOMComponentProperty "${javaHome}" "${classpath}" "${sbomJson}" "Eclipse Temurin" "JDK Variant" "${BUILD_CONFIG[BUILD_VARIANT]^}"
+  # Add scmRef as JDK Component Property
+  addSBOMComponentPropertyFromFile "${javaHome}" "${classpath}" "${sbomJson}" "Eclipse Temurin" "SCM Ref" "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/scmref.txt"
+  # Add OpenJDK source ref commit as JDK Component Property
+  addSBOMComponentPropertyFromFile "${javaHome}" "${classpath}" "${sbomJson}" "Eclipse Temurin" "OpenJDK Source Commit" "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/openjdkSource.txt"
+  # Add buildRef as JDK Component Property
+  addSBOMComponentPropertyFromFile "${javaHome}" "${classpath}" "${sbomJson}" "Eclipse Temurin" "Temurin Build Ref" "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/buildSource.txt"
+  # Add builtConfig JDK Component Property, load as Json string
+  built_config=$(createConfigToJsonString)
+  addSBOMComponentProperty "${javaHome}" "${classpath}" "${sbomJson}" "Eclipse Temurin" "Build Config" "${built_config}"
   # Add full_version_output JDK Component Property
-  addSBOMComponentProperty "${javaHome}" "${classpath}" "${sbomJson}" "JDK" "full_version_output" "${fullVerOutput}"
-
+  addSBOMComponentProperty "${javaHome}" "${classpath}" "${sbomJson}" "Eclipse Temurin" "full_version_output" "${fullVerOutput}"
   # Add makejdk_any_platform_args JDK Component Property
-  addSBOMComponentPropertyFromFile "${javaHome}" "${classpath}" "${sbomJson}" "JDK" "makejdk_any_platform_args" "${BUILD_CONFIG[WORKSPACE_DIR]}/config/makejdk-any-platform.args"
-
+  addSBOMComponentPropertyFromFile "${javaHome}" "${classpath}" "${sbomJson}" "Eclipse Temurin" "makejdk_any_platform_args" "${BUILD_CONFIG[WORKSPACE_DIR]}/config/makejdk-any-platform.args"
   # Add make_command_args JDK Component Property
-  addSBOMComponentPropertyFromFile "${javaHome}" "${classpath}" "${sbomJson}" "JDK" "make_command_args" "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/makeCommandArg.txt"
+  addSBOMComponentPropertyFromFile "${javaHome}" "${classpath}" "${sbomJson}" "Eclipse Temurin" "make_command_args" "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/makeCommandArg.txt"
 
-  # Add OS
-  addSBOMMetadataProperty "${javaHome}" "${classpath}" "${sbomJson}" "OS_KERNEL" "${BUILD_CONFIG[OS_KERNEL_NAME]^}"
-
-  # Add ARCHITECTURE
-  addSBOMMetadataProperty "${javaHome}" "${classpath}" "${sbomJson}" "OS_ARCHITECTURE" "${BUILD_CONFIG[OS_ARCHITECTURE]^}"
-
-  # Add VARIANT
-  addSBOMMetadataProperty "${javaHome}" "${classpath}" "${sbomJson}" "VARIANT" "${BUILD_CONFIG[BUILD_VARIANT]^}"
-
-  # Add ALSA 3rd party component
-  addSBOMComponentFromFile "${javaHome}" "${classpath}" "${sbomJson}" "ALSA" "dependency_version_alsa" "url" "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/dependency_version_alsa.txt"
-
-  # Add FreeType 3rd party component
-  addSBOMComponentFromFile "${javaHome}" "${classpath}" "${sbomJson}" "FreeType" "dependency_version_freetype" "url" "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/dependency_version_freetype.txt"
-
-  # Add FreeMarker 3rd party component
-  addSBOMComponentFromFile "${javaHome}" "${classpath}" "${sbomJson}" "FreeMarker" "dependency_version_freemarker" "url" "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/dependency_version_freemarker.txt"
+  # Below add build tools into metadata tools
+  # Add ALSA 3rd party
+  addSBOMMetadataTools "${javaHome}" "${classpath}" "${sbomJson}" "ALSA" "$(cat ${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/dependency_version_alsa.txt)"
+  # Add FreeType 3rd party
+  addSBOMMetadataTools "${javaHome}" "${classpath}" "${sbomJson}" "FreeType" "$(cat ${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/dependency_version_freetype.txt)"
+  # Add FreeMarker 3rd party
+  addSBOMMetadataTools "${javaHome}" "${classpath}" "${sbomJson}" "FreeMarker" "$(cat ${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/dependency_version_freemarker.txt)"
+  # Add Build Docker image SHA1
+  addSBOMMetadataTools "${javaHome}" "${classpath}" "${sbomJson}" "Docker image SHA1" "$(cat ${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/docker.txt)"
 
   # Print SBOM json
   echo "CycloneDX SBOM:"
@@ -739,69 +743,6 @@ generateSBoM() {
   echo ""
 }
 
-# Add the given Property name & value to the SBOM Metadata
-addSBOMMetadataProperty() {
-  local javaHome="${1}"
-  local classpath="${2}"
-  local jsonFile="${3}"
-  local name="${4}"
-  local value="${5}"
-  "${javaHome}"/bin/java -cp "${classpath}" temurin.sbom.TemurinGenSBOM --addMetadataProp --jsonFile "${jsonFile}" --name "${name}" --value "${value}"
-}
-
-# If the given property file exists, then add the given Property name with the given file contents value to the SBOM Metadata
-addSBOMMetadataPropertyFromFile() {
-  local javaHome="${1}"
-  local classpath="${2}"
-  local jsonFile="${3}"
-  local name="${4}"
-  local propFile="${5}"
-  if [ -e "${propFile}" ]; then
-      local value=$(cat "${propFile}")
-      "${javaHome}"/bin/java -cp "${classpath}" temurin.sbom.TemurinGenSBOM --addMetadataProp --jsonFile "${jsonFile}" --name "${name}" --value "${value}"
-  fi
-}
-
-# If the given property file exists, then add the given Component and Property with the given file contents value
-addSBOMComponentFromFile() {
-  local javaHome="${1}"
-  local classpath="${2}"
-  local jsonFile="${3}"
-  local compName="${4}"
-  local description="${5}"
-  local name="${6}"
-  local propFile="${7}"
-  if [ -e "${propFile}" ]; then
-      local value=$(cat "${propFile}")
-      "${javaHome}"/bin/java -cp "${classpath}" temurin.sbom.TemurinGenSBOM --addComponent     --jsonFile "${jsonFile}" --compName "${compName}" --description "${description}"
-      "${javaHome}"/bin/java -cp "${classpath}" temurin.sbom.TemurinGenSBOM --addComponentProp --jsonFile "${jsonFile}" --compName "${compName}" --name "${name}" --value "${value}"
-  fi
-}
-
-# Add the given Property name & value to the given SBOM Component
-addSBOMComponentProperty() {
-  local javaHome="${1}"
-  local classpath="${2}"
-  local jsonFile="${3}"
-  local compName="${4}"
-  local name="${5}"
-  local value="${6}"
-  "${javaHome}"/bin/java -cp "${classpath}" temurin.sbom.TemurinGenSBOM --addComponentProp --jsonFile "${jsonFile}" --compName "${compName}" --name "${name}" --value "${value}"
-}
-
-# If the given property file exists, then add the given Property name with the given file contents value to the given SBOM Component
-addSBOMComponentPropertyFromFile() {
-  local javaHome="${1}"
-  local classpath="${2}"
-  local jsonFile="${3}"
-  local compName="${4}"
-  local name="${5}"
-  local propFile="${6}"
-  if [ -e "${propFile}" ]; then
-      local value=$(cat "${propFile}")
-      "${javaHome}"/bin/java -cp "${classpath}" temurin.sbom.TemurinGenSBOM --addComponentProp --jsonFile "${jsonFile}" --compName "${compName}" --name "${name}" --value "${value}"
-  fi
-}
 
 getGradleJavaHome() {
   local gradleJavaHome=""
@@ -1206,8 +1147,8 @@ setPlistValueForMacOS() {
   local DIRECTORY="${1}"
   local TYPE="${2}"
 
-  # Only perform these steps for EF builds
-  if [[ "${BUILD_CONFIG[VENDOR]}" == "Eclipse Adoptium" ]]; then
+  # Only perform these steps for Eclipse Adoptium jdk8 builds
+  if [[ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK8_CORE_VERSION}" ]] && [[ "${BUILD_CONFIG[VENDOR]}" == "Eclipse Adoptium" ]]; then
     # SXA: Not changing these now as it may cause side effects
     # May relate to signing. Also cannot contain spaces
     VENDOR_NAME="temurin"
@@ -1287,7 +1228,8 @@ getLatestTagJDK8() {
         better=1
       fi
 
-      if [ "$better" -ne 0 ] ; then
+      # Ignore "jdk8uV-b00" tags which are new version branching tags
+      if [ "$better" -ne 0 ] && [ "$cur_b" != "00" ] ; then
         max_tag="$tag"
         max_v="$cur_v"
         max_b="$cur_b"
@@ -1322,6 +1264,7 @@ getLatestTagJDK11plus() {
       local cur_x=${BASH_REMATCH[5]:-0}
       local cur_p=${BASH_REMATCH[7]:-0}
       local cur_b=${BASH_REMATCH[8]:-0}
+      local cur_actual_b=${BASH_REMATCH[8]}
 
       if [ -z "$max_tag" ] ; then
         better=1
@@ -1343,7 +1286,8 @@ getLatestTagJDK11plus() {
         fi
       fi
 
-      if [ "$better" -ne 0 ] ; then
+      # Ignore "jdk-V.W.X.P+0" tags which are new version branching tags
+      if [ "$better" -ne 0 ] && [ "$cur_actual_b" != "0" ] ; then
         max_tag="$tag"
         max_v="$cur_v"
         max_w="$cur_w"
@@ -1788,14 +1732,17 @@ cd "${BUILD_CONFIG[WORKSPACE_DIR]}"
 parseArguments "$@"
 
 if [[ "${BUILD_CONFIG[ASSEMBLE_EXPLODED_IMAGE]}" == "true" ]]; then
+  configureCommandParameters
   buildTemplatedFile
   executeTemplatedFile
   printJavaVersionString
   addInfoToReleaseFile
   addInfoToJson
   if [[ "${BUILD_CONFIG[CREATE_SBOM]}" == "true" ]]; then
-    buildCyclonedxLib
-    generateSBoM
+    javaHome="$(setupAntEnv)"
+    buildCyclonedxLib "${javaHome}"
+    generateSBoM "${javaHome}"
+    unset javaHome
   fi
   cleanAndMoveArchiveFiles
   copyFreeFontForMacOS
@@ -1814,6 +1761,9 @@ configureWorkspace
 
 echo "build.sh : $(date +%T) : Initiating build ..."
 getOpenJDKUpdateAndBuildVersion
+if [[ "$OSTYPE" == "cygwin" ]] || [[ "$OSTYPE" == "msys" ]]; then
+  patchFreetypeWindows
+fi
 configureCommandParameters
 buildTemplatedFile
 executeTemplatedFile
@@ -1825,8 +1775,10 @@ if [[ "${BUILD_CONFIG[MAKE_EXPLODED]}" != "true" ]]; then
   addInfoToReleaseFile
   addInfoToJson
   if [[ "${BUILD_CONFIG[CREATE_SBOM]}" == "true" ]]; then
-    buildCyclonedxLib
-    generateSBoM
+    javaHome="$(setupAntEnv)"
+    buildCyclonedxLib "${javaHome}"
+    generateSBoM "${javaHome}"
+    unset javaHome
   fi
   cleanAndMoveArchiveFiles
   copyFreeFontForMacOS

@@ -53,8 +53,9 @@ if [ ! -d "$(eval echo "\$$BOOT_JDK_VARIABLE")" ]; then
                 *) downloadArch="$ARCHITECTURE";;
       esac
       releaseType="ga"
-      vendor="adoptium"
-      apiUrlTemplate="https://api.\${vendor}.net/v3/binary/latest/\${JDK_BOOT_VERSION}/\${releaseType}/windows/\${downloadArch}/jdk/hotspot/normal/\${vendor}"
+      vendor="eclipse"
+      api="adoptium"
+      apiUrlTemplate="https://api.\${api}.net/v3/binary/latest/\${JDK_BOOT_VERSION}/\${releaseType}/windows/\${downloadArch}/jdk/hotspot/normal/\${vendor}"
       apiURL=$(eval echo ${apiUrlTemplate})
       echo "Downloading GA release of boot JDK version ${JDK_BOOT_VERSION} from ${apiURL}"
       # make-adopt-build-farm.sh has 'set -e'. We need to disable that for
@@ -84,6 +85,8 @@ if [ ! -d "$(eval echo "\$$BOOT_JDK_VARIABLE")" ]; then
           releaseType="ga"
           # shellcheck disable=SC2034
           vendor="adoptopenjdk"
+          # shellcheck disable=SC2034
+          api="adoptopenjdk"
           apiURL=$(eval echo ${apiUrlTemplate})
           echo "Attempting to download GA release of boot JDK version ${JDK_BOOT_VERSION} from ${apiURL}"
           wget -q "${apiURL}" -O openjdk.zip
@@ -137,8 +140,8 @@ then
       export BUILD_ARGS="${BUILD_ARGS} --freetype-version 2.5.3"
       export PATH="/cygdrive/c/openjdk/make-3.82/:$PATH"
     elif [ "${JAVA_TO_BUILD}" == "${JDK11_VERSION}" ]
-    then
-      TOOLCHAIN_VERSION="2017"
+    then 
+      export TOOLCHAIN_VERSION="2017"
       export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --disable-ccache"
     elif [ "$JAVA_FEATURE_VERSION" -gt 11 ]
     then
@@ -202,28 +205,15 @@ then
     # NASM required for OpenSSL support as per #604
     export PATH="/cygdrive/c/Program Files/LLVM/bin:/usr/bin:/cygdrive/c/openjdk/nasm-$OPENJ9_NASM_VERSION:$PATH"
   else
-    TOOLCHAIN_VERSION="2013"
+    TOOLCHAIN_VERSION="2017"
+    export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --disable-ccache"
     if [ "${JAVA_TO_BUILD}" == "${JDK8_VERSION}" ]
     then
-      export BUILD_ARGS="${BUILD_ARGS} --freetype-version 2.5.3"
+      export BUILD_ARGS="${BUILD_ARGS} --freetype-version 2.8.1"
       export PATH="/cygdrive/c/openjdk/make-3.82/:$PATH"
-      export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --disable-ccache"
-    elif [ "${JAVA_TO_BUILD}" == "${JDK9_VERSION}" ]
-    then
-      export BUILD_ARGS="${BUILD_ARGS} --freetype-version 2.5.3"
-      export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --disable-ccache"
-    elif [ "${JAVA_TO_BUILD}" == "${JDK10_VERSION}" ]
-    then
-      export BUILD_ARGS="${BUILD_ARGS} --freetype-version 2.5.3"
-      export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --disable-ccache"
-    elif [ "${JAVA_TO_BUILD}" == "${JDK11_VERSION}" ]
-    then
-      TOOLCHAIN_VERSION="2017"
-      export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --disable-ccache"
-    elif [ "$JAVA_FEATURE_VERSION" -gt 11 ]
+    elif [ "$JAVA_FEATURE_VERSION" -ge 11 ]
     then
       TOOLCHAIN_VERSION="2019"
-      export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --disable-ccache"
     fi
   fi
 
