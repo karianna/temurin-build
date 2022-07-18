@@ -531,8 +531,8 @@ checkingAndDownloadingFreeType() {
 prepareMozillaCacerts() {
     echo "Generating cacerts from Mozilla's bundle"
     cd "$SCRIPT_DIR/../security"
-    if [[ "${BUILD_CONFIG[OPENJDK_FEATURE_NUMBER]}" -ge "19" ]]; then
-      # jdk-19+ build uses JDK make tool to load keystore for reproducible builds
+    if [[ "${BUILD_CONFIG[OPENJDK_FEATURE_NUMBER]}" -ge "17" ]]; then
+      # jdk-17+ build uses JDK make tool GenerateCacerts to load keystore for reproducible builds
       time ./mk-cacerts.sh --nokeystore
     else
       time ./mk-cacerts.sh --keytool "${BUILD_CONFIG[JDK_BOOT_DIR]}/bin/keytool"
@@ -568,14 +568,19 @@ downloadingRequiredDependencies() {
   fi
 
   if [[ "${BUILD_CONFIG[FREETYPE]}" == "true" ]]; then
-    if [ -z "${BUILD_CONFIG[FREETYPE_DIRECTORY]}" ]; then
-      echo "Checking and download FreeType Font dependency"
-      checkingAndDownloadingFreeType
-    else
-      echo ""
-      echo "---> Skipping the process of checking and downloading the FreeType Font dependency, a pre-built version provided at ${BUILD_CONFIG[FREETYPE_DIRECTORY]} <---"
-      echo ""
-    fi
+    case "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" in
+      jdk8* | jdk9* | jdk10*)
+        if [ -z "${BUILD_CONFIG[FREETYPE_DIRECTORY]}" ]; then
+          echo "Checking and download FreeType Font dependency"
+          checkingAndDownloadingFreeType
+        else
+          echo ""
+          echo "---> Skipping the process of checking and downloading the FreeType Font dependency, a pre-built version provided at ${BUILD_CONFIG[FREETYPE_DIRECTORY]} <---"
+          echo ""
+        fi
+      ;;
+      *) echo "Using bundled Freetype" ;;
+    esac
   else
     echo "Skipping Freetype"
   fi

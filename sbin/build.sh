@@ -90,7 +90,27 @@ configureShenandoahBuildParameter() {
   fi
 }
 
-# Configure the boot JDK
+# Configure reproducible build
+# jdk-17 and jdk-19+ support reproducible builds
+configureReproducibleBuildParameter() {
+  if [[ "${JAVA_FEATURE_VERSION}" -ge 19 || "${JAVA_FEATURE_VERSION}" -eq 17 ]]
+  then
+      # Enable reproducible builds implicitly with --with-source-date
+      if [ "${BUILD_CONFIG[RELEASE]}" == "true" ]
+      then
+          # Use release date and disable CCache( remove --enable-ccache if exist)
+          addConfigureArg "--with-source-date=version"  " --disable-ccache"
+          CONFIGURE_ARGS="${CONFIGURE_ARGS//--enable-ccache/}"
+      else
+          # Use build date
+          addConfigureArg "--with-source-date=" "updated"
+      fi
+      # Ensure reproducible binary with a unique build user identifier
+      addConfigureArg "--with-build-user=" "adoptium"
+  fi
+}
+
+# Configure for MacOS Codesign
 configureMacOSCodesignParameter() {
   if [ -n "${BUILD_CONFIG[MACOSX_CODESIGN_IDENTITY]}" ]; then
     # This command needs to escape the double quotes because they are needed to preserve the spaces in the codesign cert name
@@ -130,7 +150,7 @@ getOpenJDKUpdateAndBuildVersion() {
     local openjdk_update_version
     openjdk_update_version=$(echo "${openJdkVersion}" | cut -d'u' -f 2 | cut -d'-' -f 1)
 
-    # TODO dont modify config in build script
+    # TODO don't modify config in build script
     echo "Version: ${openjdk_update_version} ${BUILD_CONFIG[OPENJDK_BUILD_NUMBER]}"
   fi
 
@@ -138,8 +158,9 @@ getOpenJDKUpdateAndBuildVersion() {
 }
 
 patchFreetypeWindows() {
-  # Allows freetype to be built for JDK8u with Visual Studio 2017 (see https://github.com/openjdk/jdk8u-dev/pull/3#issuecomment-1087677766)
-  if [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK8_CORE_VERSION}" ] && [ "${ARCHITECTURE}" = "x64" ]; then
+  # Allow freetype 2.8.1 to be built for JDK8u with Visual Studio 2017 (see https://github.com/openjdk/jdk8u-dev/pull/3#issuecomment-1087677766).
+  # Don't apply the patch for OpenJ9 (OpenJ9 doesn't need the patch and, technically, it should only be applied for version 2.8.1).
+  if [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" = "${JDK8_CORE_VERSION}" ] && [ "${ARCHITECTURE}" = "x64" ] && [ "${BUILD_CONFIG[BUILD_VARIANT]}" != "${BUILD_VARIANT_OPENJ9}" ]; then
     rm "${BUILD_CONFIG[WORKSPACE_DIR]}/libs/freetype/builds/windows/vc2010/freetype.vcxproj"
     # Copy the replacement freetype.vcxproj file from the .github directory
     cp "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/${BUILD_CONFIG[OPENJDK_SOURCE_DIR]}/.github/workflows/freetype.vcxproj" "${BUILD_CONFIG[WORKSPACE_DIR]}/libs/freetype/builds/windows/vc2010/freetype.vcxproj"
@@ -414,13 +435,13 @@ configureFreetypeLocation() {
       local freetypeDir="${BUILD_CONFIG[FREETYPE_DIRECTORY]}"
       if [[ "$OSTYPE" == "cygwin" ]] || [[ "$OSTYPE" == "msys" ]]; then
         case "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" in
-        jdk8* | jdk9* | jdk10*) addConfigureArg "--with-freetype-src=" "${BUILD_CONFIG[WORKSPACE_DIR]}/libs/freetype" ;;
-        *) freetypeDir=${BUILD_CONFIG[FREETYPE_DIRECTORY]:-bundled} ;;
+          jdk8* | jdk9* | jdk10*) addConfigureArg "--with-freetype-src=" "${BUILD_CONFIG[WORKSPACE_DIR]}/libs/freetype" ;;
+          *) freetypeDir=${BUILD_CONFIG[FREETYPE_DIRECTORY]:-bundled} ;;
         esac
       else
         case "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" in
-        jdk8* | jdk9* | jdk10*) freetypeDir=${BUILD_CONFIG[FREETYPE_DIRECTORY]:-"${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/installedfreetype"} ;;
-        *) freetypeDir=${BUILD_CONFIG[FREETYPE_DIRECTORY]:-bundled} ;;
+          jdk8* | jdk9* | jdk10*) freetypeDir=${BUILD_CONFIG[FREETYPE_DIRECTORY]:-"${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/installedfreetype"} ;;
+          *) freetypeDir=${BUILD_CONFIG[FREETYPE_DIRECTORY]:-bundled} ;;
         esac
       fi
 
@@ -447,11 +468,14 @@ configureCommandParameters() {
     buildingTheRestOfTheConfigParameters
   fi
 
+  echo "Adjust configure for reproducible build"
+  configureReproducibleBuildParameter
+
   echo "Configuring jvm variants if provided"
   addConfigureArgIfValueIsNotEmpty "--with-jvm-variants=" "${BUILD_CONFIG[JVM_VARIANT]}"
 
   if [ "${BUILD_CONFIG[CUSTOM_CACERTS]}" = "true" ] ; then
-    if [[ "${BUILD_CONFIG[OPENJDK_FEATURE_NUMBER]}" -ge "19" ]]; then
+    if [[ "${BUILD_CONFIG[OPENJDK_FEATURE_NUMBER]}" -ge "17" ]]; then
       echo "Configure custom cacerts src security/certs"
       addConfigureArgIfValueIsNotEmpty "--with-cacerts-src=" "$SCRIPT_DIR/../security/certs"
     else
@@ -1687,10 +1711,7 @@ addVariantVersionToJson(){
     local minor=$(echo "$variantJson" | awk -F[.] '{print $2}')
     local security=$(echo "$variantJson" | awk -F[.] '{print $3}')
     local tags=$(echo "$variantJson" | awk -F[.] '{print $4}')
-    if [[ $(echo "$variantJson" | tr -cd '.' | wc -c) -lt 3 ]]; then # Precaution for when OpenJ9 releases a 1.0.0 version
-      tags="$minor"
-      minor=""
-    fi
+
     echo -n "${major:-"0"}" > "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/variant_version/major.txt"
     echo -n "${minor:-"0"}" > "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/variant_version/minor.txt"
     echo -n "${security:-"0"}" > "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/variant_version/security.txt"

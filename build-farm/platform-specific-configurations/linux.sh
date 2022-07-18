@@ -76,6 +76,12 @@ then
   export LANG=C
 fi
 
+# Solves issues seen on 4GB HC4 systems with two large ld processes
+if [ "$(awk '/^MemTotal:/{print$2}' < /proc/meminfo)" -lt "5000000" ]
+then
+  export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --with-extra-ldflags=-Wl,--no-keep-memory"
+fi
+
 if [ "${ARCHITECTURE}" == "arm" ]
 then
   if lscpu | grep aarch64; then
@@ -238,10 +244,6 @@ if [ "${VARIANT}" == "${BUILD_VARIANT_BISHENG}" ]; then
   if [ -x "${BISHENG_OPENSSL_111_LOCATION}/lib/libcrypto.so.1.1" ]; then
     export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --with-extra-cflags=-I${BISHENG_OPENSSL_111_LOCATION}/include  --with-extra-cxxflags=-I${BISHENG_OPENSSL_111_LOCATION}/include --with-extra-ldflags=-L${BISHENG_OPENSSL_111_LOCATION}/lib"
   fi
-fi
-
-if which ccache 2> /dev/null; then
-  export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --enable-ccache"
 fi
 
 # Handle cross compilation environment for RISC-V
