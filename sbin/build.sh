@@ -98,12 +98,34 @@ configureReproducibleBuildParameter() {
       # Enable reproducible builds implicitly with --with-source-date
       if [ "${BUILD_CONFIG[RELEASE]}" == "true" ]
       then
+          # TZ issue: https://github.com/adoptium/temurin-build/issues/3075
+          export TZ=UTC
           # Use release date and disable CCache( remove --enable-ccache if exist)
           addConfigureArg "--with-source-date=version"  " --disable-ccache"
           CONFIGURE_ARGS="${CONFIGURE_ARGS//--enable-ccache/}"
       else
-          # Use build date
-          addConfigureArg "--with-source-date=" "updated"
+          if [[ -n "${BUILD_CONFIG[BUILD_REPRODUCIBLE_DATE]}" ]]; then
+              # Use supplied date
+              addConfigureArg "--with-source-date=" "${BUILD_CONFIG[BUILD_REPRODUCIBLE_DATE]}"
+
+              # Specify --with-hotspot-build-time to ensure dual pass builds like MacOS use same time
+              # Use supplied date
+              addConfigureArg "--with-hotspot-build-time=" "${BUILD_CONFIG[BUILD_REPRODUCIBLE_DATE]}"
+          else
+              # Use build date
+              addConfigureArg "--with-source-date=" "updated"
+
+              # Specify --with-hotspot-build-time to ensure dual pass builds like MacOS use same time
+              # Get current ISO-8601 datetime
+              isGnuCompatDate=$(date --version 2>&1 | grep "GNU\|BusyBox" || true)
+              if [ "x${isGnuCompatDate}" != "x" ]
+              then
+                  hotspotBuildTime=$(date --utc +"%Y-%m-%dT%H:%M:%SZ")
+              else
+                  hotspotBuildTime=$(date -u -j +"%Y-%m-%dT%H:%M:%SZ")
+              fi
+              addConfigureArg "--with-hotspot-build-time=" "${hotspotBuildTime}"
+          fi
       fi
       # Ensure reproducible binary with a unique build user identifier
       addConfigureArg "--with-build-user=" "${BUILD_CONFIG[BUILD_VARIANT]}"
@@ -252,6 +274,17 @@ configureVersionStringParameter() {
   fi
 
   local dateSuffix=$(date -u +%Y%m%d%H%M)
+  if [[ -n "${BUILD_CONFIG[BUILD_REPRODUCIBLE_DATE]}" ]]; then
+    # Use input reproducible build date supplied in ISO8601 format
+    # Convert input ISO8601 date to dateSuffix %Y%m%d%H%M format
+    isGnuCompatDate=$(date --version 2>&1 | grep "GNU\|BusyBox" || true)
+    if [ "x${isGnuCompatDate}" != "x" ]
+    then
+        dateSuffix=$(date --utc --date="${BUILD_CONFIG[BUILD_REPRODUCIBLE_DATE]}" +"%Y%m%d%H%M")
+    else
+        dateSuffix=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "${BUILD_CONFIG[BUILD_REPRODUCIBLE_DATE]}" +"%Y%m%d%H%M")
+    fi
+  fi
 
   # Configures "vendor" jdk properties.
   # Temurin default values are set after this code block
@@ -727,7 +760,6 @@ generateSBoM() {
   # Add OS full version (Kernel is covered in the first field)
   addSBOMMetadataProperty "${javaHome}" "${classpath}" "${sbomJson}" "OS version" "${BUILD_CONFIG[OS_FULL_VERSION]^}"
   addSBOMMetadataProperty "${javaHome}" "${classpath}" "${sbomJson}" "OS architecture" "${BUILD_CONFIG[OS_ARCHITECTURE]^}"
-  addSBOMMetadataProperty "${javaHome}" "${classpath}" "${sbomJson}" "Use Docker for build" "${BUILD_CONFIG[USE_DOCKER]^}"
 
   # Create JDK Component
   addSBOMComponent "${javaHome}" "${classpath}" "${sbomJson}" "Eclipse Temurin" "${fullVer}" "${BUILD_CONFIG[BUILD_VARIANT]^} JDK Component"
@@ -741,6 +773,9 @@ generateSBoM() {
   addSBOMComponentPropertyFromFile "${javaHome}" "${classpath}" "${sbomJson}" "Eclipse Temurin" "OpenJDK Source Commit" "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/openjdkSource.txt"
   # Add buildRef as JDK Component Property
   addSBOMComponentPropertyFromFile "${javaHome}" "${classpath}" "${sbomJson}" "Eclipse Temurin" "Temurin Build Ref" "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/buildSource.txt"
+  # Add Tool Summary section from configure.txt
+  checkingToolSummary
+  addSBOMComponentPropertyFromFile "${javaHome}" "${classpath}" "${sbomJson}" "Eclipse Temurin" "Build Tools Summary" "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/dependency_tool_sum.txt"
   # Add builtConfig JDK Component Property, load as Json string
   built_config=$(createConfigToJsonString)
   addSBOMComponentProperty "${javaHome}" "${classpath}" "${sbomJson}" "Eclipse Temurin" "Build Config" "${built_config}"
@@ -754,12 +789,20 @@ generateSBoM() {
   # Below add build tools into metadata tools
   # Add ALSA 3rd party
   addSBOMMetadataTools "${javaHome}" "${classpath}" "${sbomJson}" "ALSA" "$(cat ${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/dependency_version_alsa.txt)"
-  # Add FreeType 3rd party
+  # Add FreeType 3rd party (windows + macOS)
   addSBOMMetadataTools "${javaHome}" "${classpath}" "${sbomJson}" "FreeType" "$(cat ${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/dependency_version_freetype.txt)"
-  # Add FreeMarker 3rd party
+  # Add FreeMarker 3rd party (openj9)
   addSBOMMetadataTools "${javaHome}" "${classpath}" "${sbomJson}" "FreeMarker" "$(cat ${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/dependency_version_freemarker.txt)"
+  
   # Add Build Docker image SHA1
-  addSBOMMetadataTools "${javaHome}" "${classpath}" "${sbomJson}" "Docker image SHA1" "$(cat ${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/docker.txt)"
+  buildimagesha=$(cat ${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/docker.txt)
+  # ${BUILD_CONFIG[USE_DOCKER]^} always set to false cannot rely on it.
+  if [ -n "${buildimagesha}" ] && [ "${buildimagesha}" != "N.A" ]; then
+    addSBOMMetadataProperty "${javaHome}" "${classpath}" "${sbomJson}" "Use Docker for build" "true"
+    addSBOMMetadataTools "${javaHome}" "${classpath}" "${sbomJson}" "Docker image SHA1" "${buildimagesha}"
+  else
+    addSBOMMetadataProperty "${javaHome}" "${classpath}" "${sbomJson}" "Use Docker for build" "false"
+  fi
 
   # Print SBOM json
   echo "CycloneDX SBOM:"
@@ -767,6 +810,14 @@ generateSBoM() {
   echo ""
 }
 
+
+# Generate build tools info into dependency file
+checkingToolSummary() {
+   echo "Checking and getting Tool Summary info:"
+   inputConfigFile="${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/configure.txt"
+   outputConfigFile="${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/dependency_tool_sum.txt"
+   sed -n '/^Tools summary:$/,$p' "${inputConfigFile}" > "${outputConfigFile}"
+}
 
 getGradleJavaHome() {
   local gradleJavaHome=""
@@ -1158,7 +1209,7 @@ createNoticeFile() {
   # Only perform these steps for EF builds
   if [[ "${BUILD_CONFIG[VENDOR]}" == "Eclipse Adoptium" ]]; then
     if [[ "${BUILD_CONFIG[OS_KERNEL_NAME]}" == "darwin" ]]; then
-      HOME_DIR="${DIRECTORY}/Contents/home/"
+      HOME_DIR="${DIRECTORY}/Contents/Home/"
     else
       HOME_DIR="${DIRECTORY}"
     fi
@@ -1181,7 +1232,7 @@ setPlistValueForMacOS() {
 
     if [[ "${BUILD_CONFIG[OS_KERNEL_NAME]}" == "darwin" ]]; then
 
-      local JAVA_LOC="${DIRECTORY}/Contents/home/bin/java"
+      local JAVA_LOC="${DIRECTORY}/Contents/Home/bin/java"
       local FULL_VERSION=$($JAVA_LOC -XshowSettings:properties -version 2>&1 | grep 'java.runtime.version' | sed 's/^.*= //' | tr -d '\r')
 
       case "${BUILD_CONFIG[BUILD_VARIANT]}" in
@@ -1597,7 +1648,7 @@ addJVMVariant() {
 }
 
 addBuildSHA() { # git SHA of the build repository i.e. openjdk-build
-  local buildSHA=$(git -C "${BUILD_CONFIG[WORKSPACE_DIR]}" rev-parse --short HEAD 2>/dev/null)
+  local buildSHA=$(git -C "${BUILD_CONFIG[WORKSPACE_DIR]}" rev-parse HEAD 2>/dev/null)
   if [[ $buildSHA ]]; then
     # shellcheck disable=SC2086
     echo -e BUILD_SOURCE=\"git:$buildSHA\" >>release
@@ -1726,7 +1777,7 @@ addVendorToJson(){
 addSourceToJson(){ # Pulls the origin repo, or uses 'openjdk-build' in rare cases of failure
   local repoName=$(git -C "${BUILD_CONFIG[WORKSPACE_DIR]}" config --get remote.origin.url 2>/dev/null)
   local repoNameStr="${repoName:-"ErrorUnknown"}"
-  local buildSHA=$(git -C "${BUILD_CONFIG[WORKSPACE_DIR]}" rev-parse --short HEAD 2>/dev/null)
+  local buildSHA=$(git -C "${BUILD_CONFIG[WORKSPACE_DIR]}" rev-parse HEAD 2>/dev/null)
   if [[ $buildSHA ]]; then
     echo -n "${repoNameStr%%.git}/commit/$buildSHA" > "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/buildSource.txt"
   else
@@ -1736,7 +1787,7 @@ addSourceToJson(){ # Pulls the origin repo, or uses 'openjdk-build' in rare case
 
 addOpenJDKSourceToJson() { # name of git repo for which SOURCE sha is from
   local openjdkSourceRepo=$(git -C "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/${BUILD_CONFIG[OPENJDK_SOURCE_DIR]}" config --get remote.origin.url 2>/dev/null)
-  local openjdkSHA=$(git -C "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/${BUILD_CONFIG[OPENJDK_SOURCE_DIR]}" rev-parse --short HEAD 2>/dev/null)
+  local openjdkSHA=$(git -C "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/${BUILD_CONFIG[OPENJDK_SOURCE_DIR]}" rev-parse HEAD 2>/dev/null)
   if [[ $openjdkSHA ]]; then
     echo -n "${openjdkSourceRepo%%.git}/commit/${openjdkSHA}" > "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/openjdkSource.txt"
   else
@@ -1759,7 +1810,7 @@ if [[ "${BUILD_CONFIG[ASSEMBLE_EXPLODED_IMAGE]}" == "true" ]]; then
   printJavaVersionString
   addInfoToReleaseFile
   addInfoToJson
-  if [[ "${BUILD_CONFIG[CREATE_SBOM]}" == "true" ]]; then
+  if [[ "${BUILD_CONFIG[CREATE_SBOM]}" == "true" ]] && [[ -d "${CYCLONEDB_DIR}" ]]; then
     javaHome="$(setupAntEnv)"
     buildCyclonedxLib "${javaHome}"
     generateSBoM "${javaHome}"
@@ -1795,7 +1846,7 @@ if [[ "${BUILD_CONFIG[MAKE_EXPLODED]}" != "true" ]]; then
   printJavaVersionString
   addInfoToReleaseFile
   addInfoToJson
-  if [[ "${BUILD_CONFIG[CREATE_SBOM]}" == "true" ]]; then
+  if [[ "${BUILD_CONFIG[CREATE_SBOM]}" == "true" ]] && [[ -d "${CYCLONEDB_DIR}" ]]; then
     javaHome="$(setupAntEnv)"
     buildCyclonedxLib "${javaHome}"
     generateSBoM "${javaHome}"

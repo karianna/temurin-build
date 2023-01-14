@@ -22,6 +22,10 @@ source "$SCRIPT_DIR/../../sbin/common/constants.sh"
 # Bundling our own freetype can cause problems, so we skip that on linux.
 export BUILD_ARGS="${BUILD_ARGS} --skip-freetype"
 
+NATIVE_API_ARCH=$(uname -m)
+if [ "${NATIVE_API_ARCH}" = "x86_64" ]; then NATIVE_API_ARCH=x64; fi
+if [ "${NATIVE_API_ARCH}" = "armv7l" ]; then NATIVE_API_ARCH=arm; fi
+
 if [ "${ARCHITECTURE}" == "x64" ]
 then
   export PATH=/opt/rh/devtoolset-2/root/usr/bin:$PATH
@@ -46,20 +50,9 @@ fi
 
 if [ "${VARIANT}" == "${BUILD_VARIANT_OPENJ9}" ]
 then
-  # CentOS 6 has openssl 1.0.1 so we use a self-installed 1.0.2 from the playbooks
-  if grep 'release 6' /etc/redhat-release >/dev/null 2>&1 || grep 'jessie' /etc/os-release >/dev/null 2>&1 || grep 'SUSE' /etc/os-release >/dev/null 2>&1; then
-    if [ -r /usr/local/openssl-1.0.2/include/openssl/opensslconf.h ]; then
-      export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --with-openssl=/usr/local/openssl-1.0.2"
-    else
-      export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --with-openssl=fetched"
-    fi
-  else
-    export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --with-openssl=system"
-  fi
-fi
+  # OpenJ9 fetches the latest OpenSSL in their get_source.sh
+  export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --with-openssl=fetched"
 
-if [ "${VARIANT}" == "${BUILD_VARIANT_OPENJ9}" ]
-then
   if [ "${ARCHITECTURE}" == "ppc64le" ] || [ "${ARCHITECTURE}" == "x64" ]
   then
     CUDA_VERSION=9.0
@@ -150,9 +143,14 @@ if [ ! -d "$(eval echo "\$$BOOT_JDK_VARIABLE")" ]; then
       export "${BOOT_JDK_VARIABLE}"="/usr/lib/jvm/jdk-${JDK_BOOT_VERSION}"
     elif [ "$JDK_BOOT_VERSION" -ge 8 ]; then # Adoptium has no build pre-8
       mkdir -p "$bootDir"
+      export downloadArch
+      case "$ARCHITECTURE" in
+         "riscv64") downloadArch="$NATIVE_API_ARCH";;
+                 *) downloadArch="$ARCHITECTURE";;
+      esac
       releaseType="ga"
       vendor="eclipse"
-      apiUrlTemplate="https://api.adoptium.net/v3/binary/latest/\${JDK_BOOT_VERSION}/\${releaseType}/linux/\${ARCHITECTURE}/jdk/hotspot/normal/\${vendor}"
+      apiUrlTemplate="https://api.adoptium.net/v3/binary/latest/\${JDK_BOOT_VERSION}/\${releaseType}/linux/\${downloadArch}/jdk/hotspot/normal/\${vendor}"
       apiURL=$(eval echo ${apiUrlTemplate})
       echo "Downloading GA release of boot JDK version ${JDK_BOOT_VERSION} from ${apiURL}"
       # make-adopt-build-farm.sh has 'set -e'. We need to disable that for
@@ -247,9 +245,6 @@ if [ "${VARIANT}" == "${BUILD_VARIANT_BISHENG}" ]; then
 fi
 
 # Handle cross compilation environment for RISC-V
-NATIVE_API_ARCH=$(uname -m)
-if [ "${NATIVE_API_ARCH}" = "x86_64" ]; then NATIVE_API_ARCH=x64; fi
-if [ "${NATIVE_API_ARCH}" = "armv7l" ]; then NATIVE_API_ARCH=arm; fi
 if [ "${ARCHITECTURE}" == "riscv64" ] && [ "${NATIVE_API_ARCH}" != "riscv64" ]; then
   if [ "${VARIANT}" == "${BUILD_VARIANT_OPENJ9}" ]; then
     export BUILDJDK=${WORKSPACE:-$PWD}/buildjdk

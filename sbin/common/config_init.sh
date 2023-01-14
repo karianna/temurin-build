@@ -38,6 +38,7 @@ OPENJDK_BUILD_REPO_BRANCH
 OPENJDK_BUILD_REPO_URI
 BRANCH
 BUILD_FULL_NAME
+BUILD_REPRODUCIBLE_DATE
 BUILD_VARIANT
 CERTIFICATE
 CLEAN_DOCKER_BUILD
@@ -211,6 +212,9 @@ function parseConfigurationArguments() {
 
         "--build-variant" )
         BUILD_CONFIG[BUILD_VARIANT]="$1"; shift;;
+
+        "--build-reproducible-date" )
+        BUILD_CONFIG[BUILD_REPRODUCIBLE_DATE]="$1"; shift;;
 
         "--branch" | "-b" )
         BUILD_CONFIG[BRANCH]="$1"; shift;;
@@ -454,7 +458,7 @@ function configDefaults() {
   BUILD_CONFIG[COPY_MACOSX_FREE_FONT_LIB_FOR_JRE_FLAG]="false"
   BUILD_CONFIG[FREETYPE]=true
   BUILD_CONFIG[FREETYPE_DIRECTORY]=""
-  BUILD_CONFIG[FREETYPE_FONT_VERSION]="2.9.1"
+  BUILD_CONFIG[FREETYPE_FONT_VERSION]="86bc8a95056c97a810986434a3f268cbe67f2902" # 2.9.1
   BUILD_CONFIG[FREETYPE_FONT_BUILD_TYPE_PARAM]=""
 
   case "${BUILD_CONFIG[OS_KERNEL_NAME]}" in
@@ -466,14 +470,17 @@ function configDefaults() {
       ;;
   esac
 
+  # Default to no supplied reproducible build date, uses current date
+  BUILD_CONFIG[BUILD_REPRODUCIBLE_DATE]=""
+
   # The default behavior of whether we want to create a separate debug symbols archive
   BUILD_CONFIG[CREATE_DEBUG_IMAGE]="false"
 
   # The default behavior of whether we want to create the legacy JRE
   BUILD_CONFIG[CREATE_JRE_IMAGE]="false"
 
-  # Set default value to "true. If we do not want this behavior, we can update buildArg per each config file instead
-  BUILD_CONFIG[CREATE_SBOM]="true"
+  # Set default value to "false". We config buildArg per each config file to have it enabled by our pipeline
+  BUILD_CONFIG[CREATE_SBOM]="false"
 
   # The default behavior of whether we want to create a separate source archive
   BUILD_CONFIG[CREATE_SOURCE_ARCHIVE]="false"

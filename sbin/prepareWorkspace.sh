@@ -35,7 +35,6 @@ source "$SCRIPT_DIR/common/constants.sh"
 ALSA_LIB_VERSION=${ALSA_LIB_VERSION:-1.1.6}
 ALSA_LIB_CHECKSUM=${ALSA_LIB_CHECKSUM:-5f2cd274b272cae0d0d111e8a9e363f08783329157e8dd68b3de0c096de6d724}
 FREEMARKER_LIB_CHECKSUM=${FREEMARKER_LIB_CHECKSUM:-8723ec9ffe006e8d376b6c7dbe7950db34ad1fa163aef4026e6477151a1a0deb}
-FREETYPE_LIB_CHECKSUM=${FREETYPE_LIB_CHECKSUM:-ec391504e55498adceb30baceebd147a6e963f636eb617424bcfc47a169898ce}
 
 FREETYPE_FONT_SHARED_OBJECT_FILENAME="libfreetype.so*"
 FREEMARKER_LIB_VERSION=${FREEMARKER_LIB_VERSION:-2.3.31}
@@ -205,7 +204,7 @@ checkoutRequiredCodeToBuild() {
         # Tag will be something similar to jdk-11.0.8+8_adopt-160-g824f8474f5
         # jdk-11.0.8+8_adopt = TAGNAME
         # 160 = NUMBER OF COMMITS ON TOP OF THE ORIGINAL TAGGED OBJECT
-        # g824f8474f5 = THE SHORT HASH OF THE MOST RECENT COMMIT
+        # g824f8474f5 = "g" + THE SHORT HASH OF THE MOST RECENT COMMIT
         echo "SUCCESS: TAG FOUND! Exporting to $scmrefPath..."
         git describe > "$scmrefPath"
 
@@ -263,7 +262,7 @@ updateOpenj9Sources() {
   if [ "${BUILD_CONFIG[BUILD_VARIANT]}" == "${BUILD_VARIANT_OPENJ9}" ]; then
     cd "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/${BUILD_CONFIG[OPENJDK_SOURCE_DIR]}" || return
     # NOTE: fetched openssl will NOT be used in the RISC-V cross-compile situation
-    bash get_source.sh --openssl-version=1.1.1p
+    bash get_source.sh --openssl-version=1.1.1s
     cd "${BUILD_CONFIG[WORKSPACE_DIR]}"
   fi
 }
@@ -441,7 +440,7 @@ downloadFile() {
   fi
 }
 
-# Get Freetype
+# Clone Freetype from GitHub
 checkingAndDownloadingFreeType() {
   cd "${BUILD_CONFIG[WORKSPACE_DIR]}/libs/" || exit
   echo "Checking for freetype at ${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}"
@@ -452,24 +451,34 @@ checkingAndDownloadingFreeType() {
   if [[ -n "$FOUND_FREETYPE" ]]; then
     echo "Skipping FreeType download"
   else
-    downloadFile "freetype.tar.gz" "https://ci.adoptopenjdk.net/userContent/freetype/freetype-${BUILD_CONFIG[FREETYPE_FONT_VERSION]}.tar.gz"
-    downloadFile "freetype.tar.gz.sig" "https://ci.adoptopenjdk.net/userContent/freetype/freetype-${BUILD_CONFIG[FREETYPE_FONT_VERSION]}.tar.gz.sig"
-    checkFingerprint "freetype.tar.gz.sig" "freetype.tar.gz" "freetype" "58E0 C111 E39F 5408 C5D3 EC76 C1A6 0EAC E707 FDA5" "${FREETYPE_LIB_CHECKSUM}"
-
-    FREETYPE_BUILD_INFO="https://ci.adoptopenjdk.net/userContent/freetype/freetype-${BUILD_CONFIG[FREETYPE_FONT_VERSION]}.tar.gz"
-
+    # Delete existing freetype folder if it exists
     rm -rf "./freetype" || true
-    mkdir -p "freetype" || true
-    tar xpzf freetype.tar.gz --strip-components=1 -C "freetype"
-    rm freetype.tar.gz
+
+    case ${BUILD_CONFIG[FREETYPE_FONT_VERSION]} in
+    *.*)
+      # Replace . with - in version number e.g 2.8.1 -> 2-8-1
+      FREETYPE_BRANCH="VER-${BUILD_CONFIG[FREETYPE_FONT_VERSION]//./-}"
+      git clone https://github.com/freetype/freetype.git -b "${FREETYPE_BRANCH}" freetype || exit
+      ;;
+    *)
+      # Use specific git hash
+      git clone https://github.com/freetype/freetype.git freetype || exit
+      cd freetype || exit
+      git checkout "${BUILD_CONFIG[FREETYPE_FONT_VERSION]}" || exit
+      cd .. || exit
+      ;;
+    esac
+  
+    # Fetch the sha for the commit we just cloned
+    cd freetype || exit
+    FREETYPE_SHA=$(git rev-parse HEAD) || exit
+    FREETYPE_BUILD_INFO="https://github.com/freetype/freetype/commit/${FREETYPE_SHA}"
 
     if [[ "$OSTYPE" == "cygwin" ]] || [[ "$OSTYPE" == "msys" ]]; then
       # Record buildinfo version
       echo "${FREETYPE_BUILD_INFO}" > "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/dependency_version_freetype.txt"
       return
     fi
-
-    cd freetype || exit
 
     local pngArg=""
     if ./configure --help | grep "with-png"; then
@@ -483,7 +492,7 @@ checkingAndDownloadingFreeType() {
 
     # We get the files we need at $WORKING_DIR/installedfreetype
     # shellcheck disable=SC2046
-    if ! (eval "${freetypeEnv}" && bash ./configure --prefix="${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}"/installedfreetype "${pngArg}" "${BUILD_CONFIG[FREETYPE_FONT_BUILD_TYPE_PARAM]}" && ${BUILD_CONFIG[MAKE_COMMAND_NAME]} all && ${BUILD_CONFIG[MAKE_COMMAND_NAME]} install); then
+    if ! (eval "${freetypeEnv}" && bash ./autogen.sh && bash ./configure --prefix="${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}"/installedfreetype "${pngArg}" "${BUILD_CONFIG[FREETYPE_FONT_BUILD_TYPE_PARAM]}" && ${BUILD_CONFIG[MAKE_COMMAND_NAME]} all && ${BUILD_CONFIG[MAKE_COMMAND_NAME]} install); then
       # shellcheck disable=SC2154
       echo "Failed to configure and build libfreetype, exiting"
       exit
@@ -527,6 +536,11 @@ checkingAndDownloadingFreeType() {
   echo "${FREETYPE_BUILD_INFO}" > "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/dependency_version_freetype.txt"
 }
 
+# Recording Build image SHA into docker.txt
+writeDockerImageSHA(){
+  echo "${BUILDIMAGESHA-N.A}" > "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/docker.txt"
+}
+
 # Generates cacerts file
 prepareMozillaCacerts() {
     echo "Generating cacerts from Mozilla's bundle"
@@ -539,7 +553,7 @@ prepareMozillaCacerts() {
     fi
 }
 
-# Download all of the dependencies for OpenJDK (Alsa, FreeType, etc.)
+# Download all of the dependencies for OpenJDK (Alsa, FreeType, FreeMarker etc.)
 downloadingRequiredDependencies() {
   if [[ "${BUILD_CONFIG[CLEAN_LIBS]}" == "true" ]]; then
     rm -rf "${BUILD_CONFIG[WORKSPACE_DIR]}/libs/freetype" || true
@@ -673,4 +687,5 @@ function configureWorkspace() {
       prepareMozillaCacerts
     fi
   fi
+  writeDockerImageSHA
 }
