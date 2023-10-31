@@ -133,6 +133,7 @@ checkoutRequiredCodeToBuild() {
   local rc=0
 
   local tag="${BUILD_CONFIG[TAG]}"
+  local sha=""
   if [ "${BUILD_CONFIG[BUILD_VARIANT]}" != "${BUILD_VARIANT_OPENJ9}" ]; then
     git fetch --tags || rc=$?
     if [ $rc -eq 0 ]; then
@@ -140,6 +141,11 @@ checkoutRequiredCodeToBuild() {
         echo "looks like the scm ref given is a valid tag, so treat it as a tag"
         tag="${BUILD_CONFIG[BRANCH]}"
         BUILD_CONFIG[TAG]="${tag}"
+        BUILD_CONFIG[SHALLOW_CLONE_OPTION]=""
+      elif git cat-file commit "${BUILD_CONFIG[BRANCH]}"; then
+        echo "look like the scm ref given is a valid sha, so treat it as a sha"
+        sha="${BUILD_CONFIG[BRANCH]}"
+        BUILD_CONFIG[SHALLOW_CLONE_OPTION]=""
       fi
     else
       echo "Failed cmd: git fetch --tags"
@@ -164,6 +170,19 @@ checkoutRequiredCodeToBuild() {
         fi
       else
         echo "Failed cmd: git fetch origin \"refs/tags/${tag}:refs/tags/${tag}\""
+      fi
+    elif [ "$sha" ]; then
+      echo "Checking out sha ${sha}"
+      git checkout "${sha}" || rc=$?
+      if [ $rc -eq 0 ]; then
+        git reset --hard || rc=$?
+        if [ $rc -eq 0 ]; then
+          echo "Checked out sha ${sha}"
+        else
+          echo "Failed cmd reset sha: git reset --hard"
+        fi
+      else
+        echo "Failed cmd: git checkout \"${sha}\""
       fi
     else
       git remote set-branches --add origin "${BUILD_CONFIG[BRANCH]}" || rc=$?
@@ -260,7 +279,7 @@ updateOpenj9Sources() {
   if [ "${BUILD_CONFIG[BUILD_VARIANT]}" == "${BUILD_VARIANT_OPENJ9}" ]; then
     cd "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/${BUILD_CONFIG[OPENJDK_SOURCE_DIR]}" || return
     # NOTE: fetched openssl will NOT be used in the RISC-V cross-compile situation
-    bash get_source.sh --openssl-version=1.1.1u
+    bash get_source.sh --openssl-version=3.0.11
     cd "${BUILD_CONFIG[WORKSPACE_DIR]}"
   fi
 }
@@ -431,7 +450,6 @@ checkingAndDownloadingFreeType() {
 
   FOUND_FREETYPE=$(find "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/installedfreetype/lib/" -name "${FREETYPE_FONT_SHARED_OBJECT_FILENAME}" || true)
 
-  FREETYPE_BUILD_INFO="Unknown"
   if [[ -n "$FOUND_FREETYPE" ]]; then
     echo "Skipping FreeType download"
   else
@@ -453,14 +471,9 @@ checkingAndDownloadingFreeType() {
       ;;
     esac
 
-    # Fetch the sha for the commit we just cloned
     cd freetype || exit
-    FREETYPE_SHA=$(git rev-parse HEAD) || exit
-    FREETYPE_BUILD_INFO="https://github.com/freetype/freetype/commit/${FREETYPE_SHA}"
 
     if [[ "$OSTYPE" == "cygwin" ]] || [[ "$OSTYPE" == "msys" ]]; then
-      # Record buildinfo version
-      echo "${FREETYPE_BUILD_INFO}" > "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/dependency_version_freetype.txt"
       return
     fi
 
@@ -515,9 +528,6 @@ checkingAndDownloadingFreeType() {
       fi
     fi
   fi
-
-  # Record buildinfo version
-  echo "${FREETYPE_BUILD_INFO}" > "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/dependency_version_freetype.txt"
 }
 
 # Recording Build image SHA into docker.txt

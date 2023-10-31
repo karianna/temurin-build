@@ -98,11 +98,8 @@ configureReproducibleBuildParameter() {
       # Enable reproducible builds implicitly with --with-source-date
       if [ "${BUILD_CONFIG[RELEASE]}" == "true" ]
       then
-          # TZ issue: https://github.com/adoptium/temurin-build/issues/3075
-          export TZ=UTC
-          # Use release date and disable CCache( remove --enable-ccache if exist)
-          addConfigureArg "--with-source-date=version"  " --disable-ccache"
-          CONFIGURE_ARGS="${CONFIGURE_ARGS//--enable-ccache/}"
+          # Use release date
+          addConfigureArg "--with-source-date=" "version" 
       else
           # Use BUILD_TIMESTAMP date
 
@@ -120,12 +117,78 @@ configureReproducibleBuildParameter() {
           # Use supplied date
           addConfigureArg "--with-hotspot-build-time=" "'${BUILD_CONFIG[BUILD_TIMESTAMP]}'"
       fi
+
+      # TZ issue: https://github.com/adoptium/temurin-build/issues/3075
+      export TZ=UTC
+
+      # disable CCache (remove --enable-ccache if exist)
+      addConfigureArg "--disable-ccache" ""
+      CONFIGURE_ARGS="${CONFIGURE_ARGS//--enable-ccache/}"
+
       # Ensure reproducible and comparable binary with a unique build user identifier
       addConfigureArg "--with-build-user=" "admin"
       if [ "${BUILD_CONFIG[OS_KERNEL_NAME]}" == "aix" ]; then
-         addConfigureArg "--with-extra-cflags" "-qnotimestamp"
-         addConfigureArg "--with-extra-cxxflags" "-qnotimestamp"
+         addConfigureArg "--with-extra-cflags=" "-qnotimestamps"
+         addConfigureArg "--with-extra-cxxflags=" "-qnotimestamps"
       fi
+
+      configureReproducibleBuildDebugMapping
+  fi
+}
+
+# For reproducible builds  we need to add debug mappings for the system header paths,
+# so that debug symbol files (and thus libraries) are deterministic
+configureReproducibleBuildDebugMapping() {
+  # For Linux add -fdebug-prefix-map'ings for root and gcc include paths,
+  # pointing to a common set of folders so that the debug binaries are deterministic:
+  # 
+  #  root include : /usr/include
+  #  gcc include  : /usr/local/gcc_include
+  #  g++ include  : /usr/local/gxx_include
+  #
+  if [ "${BUILD_CONFIG[OS_KERNEL_NAME]}" == "linux" ]; then
+    # Add debug prefix map for root /usr/include, allowing for a SYSROOT
+    sysroot="$(echo "${BUILD_CONFIG[USER_SUPPLIED_CONFIGURE_ARGS]}" | sed -nE 's/.*\-\-with\-sysroot=([^[:space:]]+).*/\1/p')"
+    if [ "x$sysroot" != "x" ]; then
+       root_include=${sysroot%/}"/usr/include"
+       gcc_sysroot="--sysroot=${sysroot%/}"
+    else
+       root_include="/usr/include"
+       gcc_sysroot=""
+    fi
+    echo "Adding -fdebug-prefix-map for root include: ${root_include}=/usr/include"
+    fdebug_flags="-fdebug-prefix-map=${root_include}/=/usr/include/"
+
+    # Add debug prefix map for gcc include, allowing for SYSROOT
+    if [ -n "${CC-}" ]; then
+      gcc_include="$(dirname "$(echo "#include <stddef.h>" | $CC $gcc_sysroot -v -E - 2>&1 | grep stddef | tail -1 | tr -s " " | cut -d'"' -f2)")"
+    elif [ "$(which gcc)" != "" ]; then
+      gcc_include="$(dirname "$(echo "#include <stddef.h>" | gcc $gcc_sysroot -v -E - 2>&1 | grep stddef | tail -1 | tr -s " " | cut -d'"' -f2)")"
+    else
+      # Can't find gcc..
+      gcc_include=""
+    fi
+    if [ "x$gcc_include" != "x" ]; then
+      echo "Adding -fdebug-prefix-map for gcc include: ${gcc_include}=/usr/local/gcc_include"
+      fdebug_flags+=" -fdebug-prefix-map=${gcc_include}/=/usr/local/gcc_include/"
+    fi
+
+    # Add debug prefix map for g++ include, allowing for SYSROOT
+    if [ -n "${CXX-}" ]; then
+      gxx_include="$(dirname "$(echo "#include <cstddef>" | $CXX $gcc_sysroot -v -E -x c++ - 2>&1 | grep cstddef | tail -1 | tr -s " " | cut -d'"' -f2)")"
+    elif [ "$(which g++)" != "" ]; then
+      gxx_include="$(dirname "$(echo "#include <cstddef>" | g++ $gcc_sysroot -v -E -x c++ - 2>&1 | grep cstddef | tail -1 | tr -s " " | cut -d'"' -f2)")"
+    else
+      # Can't find g++..
+      gxx_include=""
+    fi
+    if [ "x$gxx_include" != "x" ]; then
+      echo "Adding -fdebug-prefix-map for g++ include: ${gxx_include}=/usr/local/gxx_include"
+      fdebug_flags+=" -fdebug-prefix-map=${gxx_include}/=/usr/local/gxx_include/"
+    fi
+
+    addConfigureArg "--with-extra-cflags=" "'${fdebug_flags}'"
+    addConfigureArg "--with-extra-cxxflags=" "'${fdebug_flags}'"
   fi
 }
 
@@ -488,6 +551,14 @@ configureFreetypeLocation() {
   fi
 }
 
+configureZlibLocation() {
+  if [[ "${BUILD_CONFIG[BUILD_VARIANT]}" != "${BUILD_VARIANT_OPENJ9}" ]]; then
+    if [[ ! "${CONFIGURE_ARGS}" =~ "--with-zlib" ]]; then
+      addConfigureArg "--with-zlib=" "bundled"
+    fi
+  fi
+}
+
 # Configure the command parameters
 configureCommandParameters() {
   configureVersionStringParameter
@@ -526,6 +597,7 @@ configureCommandParameters() {
   CONFIGURE_ARGS="${CONFIGURE_ARGS} ${BUILD_CONFIG[USER_SUPPLIED_CONFIGURE_ARGS]//temporary_speech_mark_placeholder/\"}"
 
   configureFreetypeLocation
+  configureZlibLocation
 
   echo "Completed configuring the version string parameter, config args are now: ${CONFIGURE_ARGS}"
 }
@@ -558,12 +630,15 @@ buildTemplatedFile() {
   fi
 
   # If it's Java 9+ then we also make test-image to build the native test libraries,
-  # For openj9 add debug-image
+  # For openj9 add debug-image. For JDK 22+ static-libs-image target name changed to
+  # static-libs-graal-image. See JDK-8307858.
   JDK_VERSION_NUMBER="${BUILD_CONFIG[OPENJDK_FEATURE_NUMBER]}"
   if [[ "${BUILD_CONFIG[BUILD_VARIANT]}" == "${BUILD_VARIANT_OPENJ9}" ]]; then
     ADDITIONAL_MAKE_TARGETS=" test-image debug-image"
-  elif [ "$JDK_VERSION_NUMBER" -gt 8 ] || [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDKHEAD_VERSION}" ]; then
+  elif [ "$JDK_VERSION_NUMBER" -gt 8 ] && [ "$JDK_VERSION_NUMBER" -lt 22 ]; then
     ADDITIONAL_MAKE_TARGETS=" test-image static-libs-image"
+  elif [ "$JDK_VERSION_NUMBER" -ge 22 ] || [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDKHEAD_VERSION}" ]; then
+    ADDITIONAL_MAKE_TARGETS=" test-image static-libs-graal-image"
   fi
 
   if [[ "${BUILD_CONFIG[MAKE_EXPLODED]}" == "true" ]]; then
@@ -703,6 +778,8 @@ setupAntEnv() {
 
   if [ ${JAVA_HOME+x} ] && [ -d "${JAVA_HOME}" ]; then
     javaHome=${JAVA_HOME}
+  elif [ ${JDK17_BOOT_DIR+x} ] && [ -d "${JDK17_BOOT_DIR}" ]; then
+    javaHome=${JDK17_BOOT_DIR}
   elif [ ${JDK8_BOOT_DIR+x} ] && [ -d "${JDK8_BOOT_DIR}" ]; then
     javaHome=${JDK8_BOOT_DIR}
   elif [ ${JDK11_BOOT_DIR+x} ] && [ -d "${JDK11_BOOT_DIR}" ]; then
@@ -804,10 +881,17 @@ generateSBoM() {
   addSBOMComponentPropertyFromFile "${javaHome}" "${classpath}" "${sbomJson}" "Eclipse Temurin" "make_command_args" "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/makeCommandArg.txt"
 
   # Below add build tools into metadata tools
+  if [ "${BUILD_CONFIG[OS_KERNEL_NAME]}" == "linux" ]; then
+    addGLIBCforLinux
+    addGCC
+  fi
+
+  addBootJDK
+
   # Add ALSA 3rd party
   addSBOMMetadataTools "${javaHome}" "${classpath}" "${sbomJson}" "ALSA" "$(cat ${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/dependency_version_alsa.txt)"
-  # Add FreeType 3rd party (windows + macOS)
-  addSBOMMetadataTools "${javaHome}" "${classpath}" "${sbomJson}" "FreeType" "$(cat ${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/dependency_version_freetype.txt)"
+  # Add FreeType 3rd party
+  addFreeTypeVersionInfo
   # Add FreeMarker 3rd party (openj9)
   addSBOMMetadataTools "${javaHome}" "${classpath}" "${sbomJson}" "FreeMarker" "$(cat ${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/dependency_version_freemarker.txt)"
   
@@ -834,6 +918,121 @@ checkingToolSummary() {
    inputConfigFile="${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/configure.txt"
    outputConfigFile="${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/dependency_tool_sum.txt"
    sed -n '/^Tools summary:$/,$p' "${inputConfigFile}" > "${outputConfigFile}"
+}
+
+# Determine FreeType version being used in the build from either the system or bundled freetype.h definition
+addFreeTypeVersionInfo() {
+   # Default to "system"
+   local FREETYPE_TO_USE="system"
+   if [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" != "${JDK8_CORE_VERSION}" ]; then
+       # For jdk-11+ get FreeType used from build spec.gmk, which can be "bundled" or "system"
+       FREETYPE_TO_USE="$(grep "^FREETYPE_TO_USE[ ]*:=" ${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/${BUILD_CONFIG[OPENJDK_SOURCE_DIR]}/build/*/spec.gmk | sed "s/^FREETYPE_TO_USE[ ]*:=[ ]*//")"
+   fi
+
+   echo "FREETYPE_TO_USE=${FREETYPE_TO_USE}"
+
+   local version="Unknown"
+   local freetypeInclude=""
+   if [ "${FREETYPE_TO_USE}" == "system" ]; then
+      local FREETYPE_CFLAGS="$(grep "^FREETYPE_CFLAGS[ ]*:=" ${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/${BUILD_CONFIG[OPENJDK_SOURCE_DIR]}/build/*/spec.gmk | sed "s/^FREETYPE_CFLAGS[ ]*:=[ ]*//" | sed "s/\-I//g")"
+      echo "FREETYPE_CFLAGS include paths=${FREETYPE_CFLAGS}"
+
+      # Search freetype include path for freetype.h
+      # shellcheck disable=SC2206
+      local freetypeIncludeDirs=(${FREETYPE_CFLAGS})
+      for i in "${!freetypeIncludeDirs[@]}"
+      do
+          local include1="${freetypeIncludeDirs[i]}/freetype/freetype.h"
+          local include2="${freetypeIncludeDirs[i]}/freetype.h"
+
+          echo "Checking for FreeType include in path ${freetypeIncludeDirs[i]}"
+          if [[ -f "${include1}" ]]; then
+              echo "Found ${include1}"
+              freetypeInclude="${include1}"
+          elif [[ -f "${include2}" ]]; then
+              echo "Found ${include2}"
+              freetypeInclude="${include2}"
+          fi
+      done
+   elif [ "${FREETYPE_TO_USE}" == "bundled" ]; then
+      # jdk-11+ supports "bundled"
+      # freetype.h location for jdk-11+
+      local include="src/java.desktop/share/native/libfreetype/include/freetype/freetype.h"
+      echo "Checking for FreeType include ${include}"
+      if [[ -f "${include}" ]]; then
+          echo "Found ${include}"
+          freetypeInclude="${include}"
+      fi
+   fi
+
+   # Obtain FreeType version from freetype.h
+   if [[ "x${freetypeInclude}" != "x" ]]; then
+      local ver_major="$(grep "FREETYPE_MAJOR" "${freetypeInclude}" | grep "#define" | tr -s " " | cut -d" " -f3)"
+      local ver_minor="$(grep "FREETYPE_MINOR" "${freetypeInclude}" | grep "#define" | tr -s " " | cut -d" " -f3)"
+      local ver_patch="$(grep "FREETYPE_PATCH" "${freetypeInclude}" | grep "#define" | tr -s " " | cut -d" " -f3)"
+      version="${ver_major}.${ver_minor}.${ver_patch}"
+   fi
+
+   addSBOMMetadataTools "${javaHome}" "${classpath}" "${sbomJson}" "FreeType" "${version}"
+}
+
+# Below add versions to sbom | Facilitate reproducible builds
+
+addGLIBCforLinux() {
+   # Determine target build LIBC from configure log "target system type" which is consistent for jdk8+
+   local inputConfigFile="${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/configure.txt"
+   # eg: checking openjdk-target C library... musl
+   local libc_type="$(grep "checking openjdk-target C library\.\.\." "${inputConfigFile}" | cut -d" " -f5)"
+   if [[ "$libc_type" == "default" ]]; then
+     # Default libc for linux is gnu gcc
+     libc_type="gnu"
+   fi
+
+   if [[ "$libc_type" == "musl" ]]; then
+     # Get musl build ldd version
+     local MUSL_VERSION="$(ldd --version 2>&1 | grep "Version" | tr -s " " | cut -d" " -f2)"
+     echo "Adding MUSL version to SBOM: ${MUSL_VERSION}"
+     addSBOMMetadataTools "${javaHome}" "${classpath}" "${sbomJson}" "MUSL" "${MUSL_VERSION}"
+   else
+     # Get GLIBC from configured build spec.gmk sysroot and features.h definitions
+
+     # Get CC and SYSROOT_CFLAGS from the built build spec.gmk.
+     local CC="$(grep "^CC[ ]*:=" ${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/${BUILD_CONFIG[OPENJDK_SOURCE_DIR]}/build/*/spec.gmk | sed "s/^CC[ ]*:=[ ]*//")"
+     # Remove env=xx from CC, so we can call from bash to get __GLIBC.
+     CC=$(echo "$CC" | tr -s " " | sed -E "s/[^ ]*=[^ ]*//g")
+     local SYSROOT_CFLAGS="$(grep "^SYSROOT_CFLAGS[ ]*:=" ${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/${BUILD_CONFIG[OPENJDK_SOURCE_DIR]}/build/*/spec.gmk | tr -s " " | cut -d" " -f3-)"
+
+     local GLIBC_MAJOR="$(echo "#include <features.h>" | $CC $SYSROOT_CFLAGS -dM -E - 2>&1 | tr -s " " | grep "#define __GLIBC__" | cut -d" " -f3)"
+     local GLIBC_MINOR="$(echo "#include <features.h>" | $CC $SYSROOT_CFLAGS -dM -E - 2>&1 | tr -s " " | grep "#define __GLIBC_MINOR__" | cut -d" " -f3)"
+     local GLIBC_VERSION="${GLIBC_MAJOR}.${GLIBC_MINOR}"
+
+     echo "Adding GLIBC version to SBOM: ${GLIBC_VERSION}"
+     addSBOMMetadataTools "${javaHome}" "${classpath}" "${sbomJson}" "GLIBC" "${GLIBC_VERSION}"
+   fi
+}
+
+addGCC() {
+   local inputConfigFile="${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/configure.txt"
+
+   local gcc_version="$(sed -n '/^Tools summary:$/,$p' "${inputConfigFile}" | tr -s " " | grep "C Compiler: Version" | cut -d" " -f5)"
+
+   echo "Adding GCC version to SBOM: ${gcc_version}"
+   addSBOMMetadataTools "${javaHome}" "${classpath}" "${sbomJson}" "GCC" "${gcc_version}"
+}
+
+addBootJDK() {
+   local inputConfigFile="${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/metadata/configure.txt"
+
+   local bootjava
+   bootjava="$(sed -n '/^Tools summary:$/,$p' "${inputConfigFile}" | grep "Boot JDK:" | sed 's/.*(at \([^)]*\)).*/\1/')/bin/java"
+   if [[ "${BUILD_CONFIG[OS_KERNEL_NAME]}" == *"cygwin"* ]]; then
+       bootjava="${bootjava}.exe"
+   fi
+   echo "BootJDK java : ${bootjava}"
+   local bootjdk="$("${bootjava}" -XshowSettings 2>&1 | grep "java\.runtime\.version" | tr -s " " | cut -d" " -f4 | sed "s/\"//g")"
+
+   echo "Adding BOOTJDK to SBOM: ${bootjdk}"
+   addSBOMMetadataTools "${javaHome}" "${classpath}" "${sbomJson}" "BOOTJDK" "${bootjdk}"
 }
 
 getGradleJavaHome() {
@@ -1534,7 +1733,14 @@ createOpenJDKTarArchive() {
   if [ -d "${sbomTargetPath}" ]; then
     # SBOM archive artifact as a .json file
     local sbomTargetName=$(echo "${BUILD_CONFIG[TARGET_FILE_NAME]//-jdk/-sbom}.json")
-    sbomTargetName="${sbomTargetName//\.tar\.gz/}"
+
+    # Remove the tarball extension from the name to be used for the SBOM
+    if [[ "$OSTYPE" == "cygwin" ]] || [[ "$OSTYPE" == "msys" ]]; then
+        sbomTargetName="${sbomTargetName//\.zip/}"
+    else
+        sbomTargetName="${sbomTargetName//\.tar\.gz/}"
+    fi
+
     local sbomArchiveTarget=${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[TARGET_DIR]}/${sbomTargetName}
     echo "OpenJDK SBOM will be ${sbomTargetName}."
     cp "${sbomTargetPath}/sbom.json" "${sbomArchiveTarget}"
