@@ -43,7 +43,7 @@
                 <echo message="Downloading cyclonedx-core-java"/>
                 <download-file
                   destfile="cyclonedx-core-java.jar"
-                  checksum="88193228f85a955127dc73e1c72efc9e08e18a01d227df47d0865dc20eceffd1"
+                  checksum="ecc371d12808dfe76047f87f8235665d74dd6cf8ec12c41d052715a3fd79e0b5"
                   srcurl="https://ci.adoptium.net/view/all/job/build.getDependency/lastSuccessfulBuild/artifact/sbom_dependencies/cyclonedx-core-java.jar"
                   />
 	      </target>
@@ -468,8 +468,41 @@
                   <arg value="--metadataName"/>
                   <arg value="Eclipse Adoptium"/>
                   <arg value="--jsonFile"/>
+                 <arg value="${testSBOMFile}"/>
+                </java>
+                <java classpath="${classpath}" classname="temurin.sbom.TemurinGenSBOM">
+                  <arg value="--verbose"/>
+                  <arg value="--addFormulation"/>
+                  <arg value="--formulaName"/>
+                  <arg value="MyFormula"/>
+                  <arg value="--jsonFile"/>
                   <arg value="${testSBOMFile}"/>
                 </java>
+                <java classpath="${classpath}" classname="temurin.sbom.TemurinGenSBOM">
+                  <arg value="--verbose"/>
+                  <arg value="--addFormulationComp"/>
+                  <arg value="--formulaName"/>
+                  <arg value="MyFormula"/>
+                  <arg value="--name"/>
+                  <arg value="CycloneDX SHAs"/>
+                  <arg value="--jsonFile"/>
+                  <arg value="${testSBOMFile}"/>
+                </java>
+                <java classpath="${classpath}" classname="temurin.sbom.TemurinGenSBOM">
+                  <arg value="--verbose"/>
+                  <arg value="--addFormulationCompProp"/>
+                  <arg value="--formulaName"/>
+                  <arg value="MyFormula"/>
+                  <arg value="--compName"/>
+                  <arg value="CycloneDX SHAs"/>
+                  <arg value="--name"/>
+                  <arg value="CycloneDX core lib"/>
+                  <arg value="--value"/>
+                  <arg value="sha123"/>
+                  <arg value="--jsonFile"/>
+                  <arg value="${testSBOMFile}"/>
+                </java>
+
         </target>
 
 	<macrodef name="download-file" description="Use curl to download a file">

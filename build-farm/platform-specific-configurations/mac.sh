@@ -22,6 +22,9 @@ source "$SCRIPT_DIR/../../sbin/common/constants.sh"
 export MACOSX_DEPLOYMENT_TARGET=10.9
 export BUILD_ARGS="${BUILD_ARGS}"
 
+c_flags_bucket=""
+cxx_flags_bucket=""
+
 ## JDK8 only: If, at this point in the build, the architecure of the machine is arm64 while the ARCHITECTURE variable
 ## is x64 then we need to add the cross compilation option --openjdk-target=x86_64-apple-darwin
 MACHINEARCHITECTURE=$(uname -m)
@@ -47,11 +50,19 @@ then
     export BUILD_ARGS="${BUILD_ARGS} --skip-freetype"
   fi
 else
-  if [[ "$JAVA_FEATURE_VERSION" -ge 17 ]] || [[ "${ARCHITECTURE}" == "aarch64" ]]; then
+  if [[ "$JAVA_FEATURE_VERSION" -ge 11 ]]; then
     # JDK17 requires metal (included in full xcode) as does JDK11 on aarch64
+    # JDK11 on x64 is matched for consistency
     XCODE_SWITCH_PATH="/Applications/Xcode.app"
+    # JDK11 and 17 on Mac (x86 and aarch) has excessive warnings.
+    # This is due to a harfbuzz fix which is pending backport.
+    # Suppressing the warnings for now to aid triage.
+    if [[ "$JAVA_FEATURE_VERSION" -le 17 ]]; then
+      export cxx_flags_bucket="${cxx_flags_bucket} -Wno-deprecated-builtins -Wno-deprecated-declarations -Wno-deprecated-non-prototype"
+      export c_flags_bucket="${c_flags_bucket} -Wno-deprecated-builtins -Wno-deprecated-declarations -Wno-deprecated-non-prototype"
+    fi
   else
-    # Command line tools used from JDK9-JDK16
+    # Command line tools used from JDK9-JDK10
     XCODE_SWITCH_PATH="/";
   fi
   export PATH="/Users/jenkins/ccache-3.2.4:$PATH"
@@ -60,11 +71,16 @@ else
   else
     if [ "${ARCHITECTURE}" == "x64" ]; then
       # We can only target 10.9 on intel macs
-      export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --with-extra-cxxflags=-mmacosx-version-min=10.9"
+      export cxx_flags_bucket="${cxx_flags_bucket} -mmacosx-version-min=10.9"
     elif [ "${ARCHITECTURE}" == "aarch64" ]; then
       export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --openjdk-target=aarch64-apple-darwin"
     fi
   fi
+fi
+
+if [[ "$JAVA_FEATURE_VERSION" -ge 21 ]]; then
+  # jdk-21+ uses "bundled" FreeType
+  export BUILD_ARGS="${BUILD_ARGS} --freetype-dir bundled"
 fi
 
 # The configure option '--with-macosx-codesign-identity' is supported in JDK8 OpenJ9 and JDK11 and JDK14+
@@ -149,4 +165,12 @@ if [ "${VARIANT}" == "${BUILD_VARIANT_OPENJ9}" ]; then
     export TAR=gtar
     export SDKPATH=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
   fi
+fi
+
+if [ ! "${c_flags_bucket}" = "" ]; then
+  export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --with-extra-cflags='${c_flags_bucket}'"
+fi
+
+if [ ! "${cxx_flags_bucket}" = "" ]; then
+  export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --with-extra-cxxflags='${cxx_flags_bucket}'"
 fi

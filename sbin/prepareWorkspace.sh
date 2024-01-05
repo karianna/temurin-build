@@ -279,7 +279,7 @@ updateOpenj9Sources() {
   if [ "${BUILD_CONFIG[BUILD_VARIANT]}" == "${BUILD_VARIANT_OPENJ9}" ]; then
     cd "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/${BUILD_CONFIG[OPENJDK_SOURCE_DIR]}" || return
     # NOTE: fetched openssl will NOT be used in the RISC-V cross-compile situation
-    bash get_source.sh --openssl-version=3.0.11
+    bash get_source.sh --openssl-version=3.0.12
     cd "${BUILD_CONFIG[WORKSPACE_DIR]}"
   fi
 }
@@ -330,11 +330,24 @@ checkingAndDownloadingAlsa() {
 
     echo "GNUPGHOME=$GNUPGHOME"
     mkdir -p "$GNUPGHOME" && chmod og-rwx "$GNUPGHOME"
-    gpg --keyserver keyserver.ubuntu.com --recv-keys "${ALSA_LIB_GPGKEYID}"
     # Should we clear this directory up after checking?
     # Would this risk removing anyone's existing dir with that name?
     # Erring on the side of caution for now
-    gpg --keyserver keyserver.ubuntu.com --recv-keys "${ALSA_LIB_GPGKEYID}"
+    # Note: the uptime command below is to aid diagnostics for this issue:
+    # https://github.com/adoptium/temurin-build/issues/3518#issuecomment-1792606345
+    uptime
+    # Will retry command below until it passes or we've failed 10 times.
+    for i in {1..10}; do
+      if gpg --keyserver keyserver.ubuntu.com --keyserver-options timeout=300 --recv-keys "${ALSA_LIB_GPGKEYID}"; then
+        echo "gpg command has passed."
+        break
+      elif [[ ${i} -lt 10 ]]; then
+        echo "gpg recv-keys attempt has failed. Retrying after 10 second pause..."
+        sleep 10s
+      else
+        echo "ERROR: gpg recv-keys final attempt has failed. Will not try again."
+      fi
+    done
     echo -e "5\ny\n" |  gpg --batch --command-fd 0 --expert --edit-key "${ALSA_LIB_GPGKEYID}" trust;
     gpg --verify alsa-lib.tar.bz2.sig alsa-lib.tar.bz2 || exit 1
 
@@ -477,19 +490,21 @@ checkingAndDownloadingFreeType() {
       return
     fi
 
-    local pngArg=""
-    if ./configure --help | grep "with-png"; then
-      pngArg="--with-png=no"
-    fi
-
     local freetypeEnv=""
     if [[ "${BUILD_CONFIG[OS_ARCHITECTURE]}" == "i686" ]] || [[ "${BUILD_CONFIG[OS_ARCHITECTURE]}" == "i386" ]]; then
       freetypeEnv="export CC=\"gcc -m32\""
     fi
 
+    eval "${freetypeEnv}" && bash ./autogen.sh || exit 1
+
+    local pngArg=""
+    if ./configure --help | grep "with-png"; then
+      pngArg="--with-png=no"
+    fi
+
     # We get the files we need at $WORKING_DIR/installedfreetype
     # shellcheck disable=SC2046
-    if ! (eval "${freetypeEnv}" && bash ./autogen.sh && bash ./configure --prefix="${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}"/installedfreetype "${pngArg}" "${BUILD_CONFIG[FREETYPE_FONT_BUILD_TYPE_PARAM]}" && ${BUILD_CONFIG[MAKE_COMMAND_NAME]} all && ${BUILD_CONFIG[MAKE_COMMAND_NAME]} install); then
+    if ! (bash ./configure --prefix="${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}"/installedfreetype "${pngArg}" "${BUILD_CONFIG[FREETYPE_FONT_BUILD_TYPE_PARAM]}" && ${BUILD_CONFIG[MAKE_COMMAND_NAME]} all && ${BUILD_CONFIG[MAKE_COMMAND_NAME]} install); then
       # shellcheck disable=SC2154
       echo "Failed to configure and build libfreetype, exiting"
       exit
