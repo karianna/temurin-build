@@ -1,18 +1,17 @@
 #!/bin/bash
 # shellcheck disable=SC1091
-################################################################################
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# ********************************************************************************
+# Copyright (c) 2023 Contributors to the Eclipse Foundation
 #
-#      https://www.apache.org/licenses/LICENSE-2.0
+# See the NOTICE file(s) with this work for additional
+# information regarding copyright ownership.
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-################################################################################
+# This program and the accompanying materials are made
+# available under the terms of the Apache Software License 2.0
+# which is available at https://www.apache.org/licenses/LICENSE-2.0.
+#
+# SPDX-License-Identifier: Apache-2.0
+# ********************************************************************************
 
 ################################################################################
 #
@@ -29,6 +28,7 @@ declare -a arrayOfErrorLinesForFailedJobs
 declare -a arrayOfAllJDKVersions
 declare -a arrayOfUs
 declare -a buildIssues
+declare -a arrayOfPipelinesToTriage
 
 headJDKVersion=9999
 
@@ -50,14 +50,16 @@ temurinPlatforms+=("aix-ppc64");            platformStart+=(8);  platformEnd+=(9
 temurinPlatforms+=("alpine-linux-aarch64"); platformStart+=(21); platformEnd+=(99)
 temurinPlatforms+=("alpine-linux-x64");     platformStart+=(8);  platformEnd+=(99)
 temurinPlatforms+=("linux-aarch64");        platformStart+=(8);  platformEnd+=(99)
-temurinPlatforms+=("linux-arm");            platformStart+=(8);  platformEnd+=(99)
+temurinPlatforms+=("linux-arm");            platformStart+=(8);  platformEnd+=(20)
 temurinPlatforms+=("linux-ppc64le");        platformStart+=(8);  platformEnd+=(99)
+temurinPlatforms+=("linux-riscv64");        platformStart+=(21); platformEnd+=(99)
 temurinPlatforms+=("linux-s390x");          platformStart+=(11); platformEnd+=(99)
 temurinPlatforms+=("linux-x64");            platformStart+=(8);  platformEnd+=(99)
 temurinPlatforms+=("mac-aarch64");          platformStart+=(11); platformEnd+=(99)
 temurinPlatforms+=("mac-x64");              platformStart+=(8);  platformEnd+=(99)
 temurinPlatforms+=("solaris-sparcv9");      platformStart+=(8);  platformEnd+=(8)
 temurinPlatforms+=("solaris-x64");          platformStart+=(8);  platformEnd+=(8)
+temurinPlatforms+=("windows-aarch64");      platformStart+=(21); platformEnd+=(99)
 temurinPlatforms+=("windows-x64");          platformStart+=(8);  platformEnd+=(99)
 temurinPlatforms+=("windows-x86-32");       platformStart+=(8);  platformEnd+=(17)
 
@@ -101,6 +103,57 @@ argumentParser() {
   done
 }
 
+# Takes a TRSS pipeline ID and jdk version, and determines if the pipeline was started by a user.
+# Returns 0 (false), 1 (true), or 2 (if we couldn't get the information).
+# Args: wasPipelineStartedByUser pipelineIDexample jdk[0-9]+u?
+wasPipelineStartedByUser() {
+  pipelineID=$1
+  jenkinsJDK=$2
+  sampleBuildName="none"
+  sampleBuildNum="none"
+
+  # We fetch the list, but only need the first build's output.
+  tempListOfPipelineBuilds=$(wget -q -O - "https://trss.adoptium.net/api/getAllChildBuilds?parentId=${pipelineID}&buildNameRegex=^${jenkinsJDK}\-.*temurin$")
+
+  # Identify a single build.
+  for jsonEntry in $tempListOfPipelineBuilds
+  do
+    if [[ $jsonEntry =~ ^\"buildName\"\:.* ]]; then
+      sampleBuildName="${jsonEntry:13:-1}"
+    elif [[ $jsonEntry =~ .*\"buildNum\"\.* ]]; then
+      sampleBuildNum="${jsonEntry:11}"
+    fi
+    if [[ ! "${sampleBuildName}_${sampleBuildNum}" =~ none ]]; then
+      break
+    fi
+  done
+
+  # Abort if we can't find a build in this pipeline.
+  if [[ "${sampleBuildName}_${sampleBuildNum}" =~ none ]]; then
+    return 2
+  fi
+
+  # Now we retrieve the build job output, limit to first dozen lines, and check if a user started it.
+  failedJob="https://ci.adoptium.net/job/build-scripts/job/jobs/job/${jenkinsJDK}/job/${sampleBuildName}/${sampleBuildNum}/consoleText"
+
+  wget -q -O - "${failedJob}" > ./jobOutput.txt
+
+  # Limit the scan to the first 20 lines. If the line we're looking for exists, it'll be at the very top. Time saving.
+  counter=0
+
+  while IFS= read -r jobOutputLine; do
+    counter=$((counter+1))
+    if [[ "$jobOutputLine" =~ Started.by.user ]]; then
+      return 1
+    fi
+    if [[ ${counter} -gt 20 ]]; then
+      return 0
+    fi
+  done < ./jobOutput.txt
+
+  return 0
+}
+
 # Iterates over the supplied JDK versions and identifies the latest timer-triggered build URLs for each version.
 # This function then checks that we're building Eclipse Temurin on every platform we should be, and makes a list
 # of all the failing builds.
@@ -114,7 +167,13 @@ identifyFailedBuildsInTimerPipelines() {
     latestTimerPipelineRaw=$(wget -q -O - "https://trss.adoptium.net/api/getBuildHistory?buildName=openjdk${arrayOfAllJDKVersions[v]}-pipeline")
     latestTimerPipelineRaw="${latestTimerPipelineRaw},HereIsTheEndOfAVeryLongFile"
     latestTimerPipeline=""
+    latestJdk8Pipelines=("none" "none" "none")
     latestTimerJenkinsJobID=""
+    pipelineStatus="unknown"
+    jdkJenkinsJobVersion="jdk${arrayOfAllJDKVersions[v]}${arrayOfUs[v]}"
+    if [[ ${arrayOfAllJDKVersions[v]} -eq ${headJDKVersion} ]]; then
+      jdkJenkinsJobVersion="jdk"
+    fi
     oldIFS=$IFS
     IFS=","
 
@@ -133,51 +192,132 @@ identifyFailedBuildsInTimerPipelines() {
         latestTimerJenkinsJobID=${jsonEntry:11}
       fi
 
-      if [[ ! $jsonEntry =~ .*user.* ]]; then
-        if [[ $jsonEntry =~ ^\"startBy\"\:\"timer\"[\}]?$ ]]; then
-          break
-        elif [[ $jsonEntry =~ ^\"startBy\"\:\".*build-scripts/weekly-openjdk.* ]]; then
-          break
-        elif [[ $jsonEntry =~ ^\"startBy\"\:\".*releaseTrigger_[0-9]+ea.* ]]; then
-          break
+      if [[ $jsonEntry =~ ^\"status\" ]]; then
+        pipelineStatus=${jsonEntry:10:-1}
+      fi
+
+      # Skip pipelines that are still running.
+      if [[ $jsonEntry =~ ^\"startBy\" ]]; then
+        if [[ ! $pipelineStatus == "Done" ]]; then
+          pipelineStatus="unknown"
+          continue
+        fi
+      fi
+
+      # Expecting 3 pipelines for jdk8, but only 1 for other versions.
+      if [[ ${arrayOfAllJDKVersions[v]} -eq 8 ]]; then
+        if [[ $jsonEntry =~ ^\"startBy\".*betaTrigger.8ea ]]; then
+          if [[ $jsonEntry =~ betaTrigger\_8ea.x64AlpineLinux && ${latestJdk8Pipelines[1]} == "none" ]]; then
+            if wasPipelineStartedByUser "$latestTimerPipeline" "${jdkJenkinsJobVersion}"; then
+              latestJdk8Pipelines[1]=$latestTimerPipeline
+              echo "Found Alpine Linux JDK8 pipeline here: https://ci.adoptium.net/job/build-scripts/job/openjdk8-pipeline/${latestTimerJenkinsJobID}/"
+            fi
+          elif [[ $jsonEntry =~ betaTrigger\_8ea\_arm32Linux && ${latestJdk8Pipelines[2]} == "none" ]]; then
+            if wasPipelineStartedByUser "$latestTimerPipeline" "${jdkJenkinsJobVersion}"; then
+              latestJdk8Pipelines[2]=$latestTimerPipeline
+              echo "Found Arm32 Linux JDK8 pipeline here: https://ci.adoptium.net/job/build-scripts/job/openjdk8-pipeline/${latestTimerJenkinsJobID}"
+            fi
+          elif [[ $jsonEntry =~ betaTrigger\_8ea\\\" && ${latestJdk8Pipelines[0]} == "none" ]]; then
+            if wasPipelineStartedByUser "$latestTimerPipeline" "${jdkJenkinsJobVersion}"; then
+              latestJdk8Pipelines[0]=$latestTimerPipeline
+              echo "Found core JDK8 pipeline here: https://ci.adoptium.net/job/build-scripts/job/openjdk8-pipeline/${latestTimerJenkinsJobID}"
+            fi
+          fi
+          if [[ ${latestJdk8Pipelines[0]} != "none" && ${latestJdk8Pipelines[1]} != "none" && ${latestJdk8Pipelines[2]} != "none" ]]; then
+            echo "Found all 3 pipelines for JDK8."
+            break
+          fi
+        fi
+      else
+        if [[ $jsonEntry =~ ^\"startBy\"\:\"timer ]]; then
+          if wasPipelineStartedByUser "$latestTimerPipeline" "${jdkJenkinsJobVersion}"; then
+            break
+          fi
+        elif [[ $jsonEntry =~ ^\"startBy\"\:\".*build-scripts/weekly-openjdk ]]; then
+          if wasPipelineStartedByUser "$latestTimerPipeline" "${jdkJenkinsJobVersion}"; then
+            break
+          fi
+        elif [[ $jsonEntry =~ ^\"startBy\"\:.*betaTrigger_${arrayOfAllJDKVersions[v]}ea ]]; then
+          if wasPipelineStartedByUser "$latestTimerPipeline" "${jdkJenkinsJobVersion}"; then
+            break
+          fi
         fi
       fi
 
       if [[ $jsonEntry =~ ^HereIsTheEndOfAVeryLongFile$ ]]; then
-        errorLog "Could not find any timer/ea-tag triggered pipeline jobs for jdk${arrayOfAllJDKVersions[v]}${arrayOfUs[v]}. Skipping to the next jdk version."
+        if [[ ${arrayOfAllJDKVersions[v]} -eq 8 ]]; then
+          if [[ ${latestJdk8Pipelines[0]} != "none" || ${latestJdk8Pipelines[1]} != "none" || ${latestJdk8Pipelines[2]} != "none" ]]; then
+            errorLog "Could not find all three of the pipelines for jdk8. Will triage the pipelines we could find."
+            continue 1
+          fi
+        fi
+        errorLog "Could not find any non-user pipeline jobs for ${jdkJenkinsJobVersion}. Skipping to the next jdk version."
         continue 2
       fi
     done
 
-    echo "Found TRSS pipeline id for jdk${arrayOfAllJDKVersions[v]}${arrayOfUs[v]} - ${latestTimerPipeline}"
-    echo "Whose URL is: https://ci.adoptium.net/job/build-scripts/job/openjdk${arrayOfAllJDKVersions[v]}-pipeline/${latestTimerJenkinsJobID}/"
+    if [[ ! ${arrayOfAllJDKVersions[v]} -eq 8 ]]; then
+      echo "Found TRSS pipeline id for ${jdkJenkinsJobVersion} - ${latestTimerPipeline}"
+      echo "Whose URL is: https://ci.adoptium.net/job/build-scripts/job/openjdk${arrayOfAllJDKVersions[v]}-pipeline/${latestTimerJenkinsJobID}/"
+      arrayOfPipelinesToTriage+=("JDK${arrayOfAllJDKVersions[v]}: https://trss.adoptium.net/resultSummary?parentId=${latestTimerPipeline}")
+    else
+      if [[ ${latestJdk8Pipelines[0]} != "none" ]]; then
+        arrayOfPipelinesToTriage+=("JDK8: https://trss.adoptium.net/resultSummary?parentId=${latestJdk8Pipelines[0]}")
+      fi
+      if [[ ${latestJdk8Pipelines[1]} != "none" ]]; then
+        arrayOfPipelinesToTriage+=("JDK8 Alpine: https://trss.adoptium.net/resultSummary?parentId=${latestJdk8Pipelines[1]}")
+      fi
+      if [[ ${latestJdk8Pipelines[2]} != "none" ]]; then
+        arrayOfPipelinesToTriage+=("JDK8 Arm32 Linux: https://trss.adoptium.net/resultSummary?parentId=${latestJdk8Pipelines[2]}")
+      fi
+    fi
 
     # Now grab a full list of builds launched by this pipeline.
-    jdkJenkinsJobVersion="jdk${arrayOfAllJDKVersions[v]}${arrayOfUs[v]}"
-    if [[ ${arrayOfAllJDKVersions[v]} -eq headJDKVersion ]]; then
-      jdkJenkinsJobVersion="jdk"
+    listOfPipelineBuilds=""
+    if [[ ${arrayOfAllJDKVersions[v]} -eq 8 ]]; then
+      for jp in "${!latestJdk8Pipelines[@]}"
+      do
+        if [[ ${latestJdk8Pipelines[jp]} != "none" ]]; then
+          echo "wgetting https://trss.adoptium.net/api/getAllChildBuilds?parentId=${latestJdk8Pipelines[jp]}&buildNameRegex=^jdk8u\-.*temurin$"
+          listOfPipelineBuilds+=$(wget -q -O - "https://trss.adoptium.net/api/getAllChildBuilds?parentId=${latestJdk8Pipelines[jp]}&buildNameRegex=^jdk8u\-.*temurin$")
+        fi
+      done
+    else
+      echo "wgetting https://trss.adoptium.net/api/getAllChildBuilds?parentId=${latestTimerPipeline}&buildNameRegex=^${jdkJenkinsJobVersion}.*temurin$"
+      listOfPipelineBuilds=$(wget -q -O - "https://trss.adoptium.net/api/getAllChildBuilds?parentId=${latestTimerPipeline}&buildNameRegex=^${jdkJenkinsJobVersion}\-.*temurin$")
     fi
-    echo "wgetting https://trss.adoptium.net/api/getAllChildBuilds?parentId=${latestTimerPipeline}&buildNameRegex=^jdk${arrayOfAllJDKVersions[v]}${arrayOfUs[v]}.*temurin$"
-    listOfPipelineBuilds=$(wget -q -O - "https://trss.adoptium.net/api/getAllChildBuilds?parentId=${latestTimerPipeline}&buildNameRegex=^${jdkJenkinsJobVersion}\-.*temurin$")
+
     declare -a listOfBuildNames
     declare -a listOfBuildNums
     declare -a listOfBuildResults
 
     shorterListOfBuilds=""
+
+    # Using this single-build tuple to ensure all of the build data lines up in the three arrays.
+    sbTuple=("none" "none" "none")
+
+    # Now we identify each build in the pipeline.
     for jsonEntry in $listOfPipelineBuilds
     do
       if [[ $jsonEntry =~ ^\"buildName\"\:.* ]]; then
-        listOfBuildNames+=("${jsonEntry:13:-1}")
-        shorterListOfBuilds+="${jsonEntry},"
+        sbTuple[0]=${jsonEntry}
       elif [[ $jsonEntry =~ .*\"buildNum\"\.* ]]; then
-        listOfBuildNums+=("${jsonEntry:11}")
+        sbTuple[1]=${jsonEntry}
       elif [[ $jsonEntry =~ .*\"buildResult\".* ]]; then
-        listOfBuildResults+=("${jsonEntry:15:-1}")
-        continue
+        sbTuple[2]=${jsonEntry}
+      elif [[ $jsonEntry =~ \"_id\" ]]; then
+        sbTuple=("none" "none" "none")
+      fi
+      if [[ ! "${sbTuple[0]},${sbTuple[1]},${sbTuple[2]}" =~ none ]]; then
+        listOfBuildNames+=("${sbTuple[0]:13:-1}")
+        listOfBuildNums+=("${sbTuple[1]:11}")
+        listOfBuildResults+=("${sbTuple[2]:15:-1}")
+        shorterListOfBuilds+="${sbTuple[0]},"
+        sbTuple=("none" "none" "none")
       fi
     done
 
-    echo "That pipeline's builds have been identified. Now validating them."
+    echo "The builds for those pipelines have been identified. Now validating them."
 
     IFS=$oldIFS
 
@@ -211,7 +351,7 @@ identifyFailedBuildsInTimerPipelines() {
     done
 
     if [[ ${triageThesePlatforms} = "" ]]; then
-      errorLog "Cannot find any valid build platforms launched by jdk ${arrayOfAllJDKVersions[v]}${arrayOfUs[v]} pipeline ${latestTimerJenkinsJobID}. Skipping to the next jdk version."
+      errorLog "Cannot find any valid build platforms launched by ${jdkJenkinsJobVersion} pipelines. Skipping to the next jdk version."
       continue
     fi
     echo "Platforms validated. Identifying build numbers for these platforms: ${triageThesePlatforms:1:-1}"
@@ -221,13 +361,9 @@ identifyFailedBuildsInTimerPipelines() {
     for b in "${!listOfBuildNames[@]}"
     do
       if [[ $triageThesePlatforms =~ .*,${listOfBuildNames[$b]},.* ]]; then
-        if [[ ! ${listOfBuildResults[$b]} =~ ^SUCCESS$ ]]; then
-          if [[ ! ${listOfBuildResults[$b]} =~ ^UNSTABLE$ ]]; then
-            jdkJenkinsJobVersion="jdk${arrayOfAllJDKVersions[v]}${arrayOfUs[v]}"
-            if [[ ${arrayOfAllJDKVersions[v]} -eq headJDKVersion ]]; then
-              jdkJenkinsJobVersion="jdk"
-            fi
-            failedJobLink="https://ci.adoptium.net/job/build-scripts/job/jobs/job/${jdkJenkinsJobVersion}/job/${listOfBuildNames[$b]}/${listOfBuildNums[$b]}/"
+        if [[ ! ${listOfBuildResults[b]} =~ ^SUCCESS$ ]]; then
+          if [[ ! ${listOfBuildResults[b]} =~ ^UNSTABLE$ ]]; then
+            failedJobLink="https://ci.adoptium.net/job/build-scripts/job/jobs/job/${jdkJenkinsJobVersion}/job/${listOfBuildNames[b]}/${listOfBuildNums[b]}/"
             echo "Identified a failed build for triage: ${failedJobLink}"
             arrayOfFailedJobs+=("${failedJobLink}")
           fi
@@ -246,6 +382,7 @@ buildFailureTriager() {
   # Iterate over the failures found and triage them against the pending array of regexes.
   for failedJob in "${arrayOfFailedJobs[@]}"; do
     wget -q -O - "${failedJob}/consoleText" > ./jobOutput.txt
+
     # If the file size is beyond 50m bytes, then report script error and do not triage, for efficiency.
     fileSize=$(wc -c < ./jobOutput.txt)
     if [[ ${fileSize} -gt 52500000 ]]; then
@@ -254,6 +391,7 @@ buildFailureTriager() {
       totalBuildFailures=$((totalBuildFailures+1))
       continue
     fi
+
     while IFS= read -r jobOutputLine; do
       for regexIndex in "${!arrayOfRegexes[@]}"; do
         # When a regex matches, store the id of the regex we matched against, and also the line of output that matched the regex.
@@ -269,12 +407,13 @@ buildFailureTriager() {
         fi
       done
     done < ./jobOutput.txt
+
     # If we reach this line, then we have not matched any of the regexs
     arrayOfRegexsForFailedJobs+=("Unmatched")
     arrayOfErrorLinesForFailedJobs+=("No error found")
     totalBuildFailures=$((totalBuildFailures+1))
   done
-    echo "Triage has ended."
+  echo "Triage has ended."
 }
 
 # Stores everything we've found in a markdown-formatted file.
@@ -290,27 +429,53 @@ generateOutputFile() {
     echo "Build failures: ${totalBuildFailures}"
     echo "Test failures: ${totalTestFailures}"
     echo ""
+    echo "# TRSS Pipeline Links"
+    if [[ ${#arrayOfPipelinesToTriage[@]} -gt 0 ]]; then
+      for pipelineTrssLink in "${arrayOfPipelinesToTriage[@]}"
+      do
+        echo "${pipelineTrssLink}"
+      done
+    fi
+    echo ""
     if [[ ${#arrayOfFailedJobs[@]} -gt 0 ]]; then
-      echo "# Failed Builds"
+      outputForFailedBuilds=""
+      outputForFailedTests=""
       for failedJobIndex in "${!arrayOfFailedJobs[@]}"
       do
         regexID="${arrayOfRegexsForFailedJobs[failedJobIndex]}"
-        echo "Failure: ${arrayOfFailedJobs[failedJobIndex]}"
+        jobTriageOutput="Failure: ${arrayOfFailedJobs[failedJobIndex]}\n"
         if [[ ${regexID} =~ Unmatched ]]; then
-          echo "Cause: ${arrayOfErrorLinesForFailedJobs[failedJobIndex]}"
+          jobTriageOutput+="Cause: ${arrayOfErrorLinesForFailedJobs[failedJobIndex]}\n"
         else
-          echo "Cause: ${arrayOfRegexMetadata[regexID]}"
+          jobTriageOutput+="Cause: ${arrayOfRegexMetadata[regexID]}\n"
           preventable="yes"
           if [[ "${arrayOfRegexPreventability[regexID]}" -gt 0 ]]; then
             preventable="no"
           fi
-          echo "Preventable: ${preventable}"
-          echo "\`\`\`"
-          echo "${arrayOfErrorLinesForFailedJobs[failedJobIndex]}"
-          echo "\`\`\`"
+          jobTriageOutput+="Preventable: ${preventable}\n"
+          jobTriageOutput+="\`\`\`\n"
+          jobTriageOutput+="${arrayOfErrorLinesForFailedJobs[failedJobIndex]}\n"
+          jobTriageOutput+="\`\`\`\n"
         fi
-        echo ""
+        jobTriageOutput+="\n"
+        if [[ ${arrayOfFailureSources[regexID]} -eq 1 ]]; then
+          outputForFailedTests+="${jobTriageOutput}"
+        else
+          outputForFailedBuilds+="${jobTriageOutput}"
+        fi
       done
+      echo "# Failed Builds"
+      if [[ -n "${outputForFailedBuilds}" ]]; then
+        echo -e "${outputForFailedBuilds}"
+      else
+        echo "None."
+      fi
+      echo "# Builds with Failed Tests (suspected)"
+      if [[ -n "${outputForFailedTests}" ]]; then
+          echo -e "${outputForFailedTests}"
+        else
+          echo "None."
+        fi
       echo "#  End of list"
     else
       echo "All build jobs passed. Huzzah!"

@@ -1,20 +1,17 @@
 #!/bin/bash
-# shellcheck disable=SC1091
-
-################################################################################
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# shellcheck disable=SC1091,SC2155
+# ********************************************************************************
+# Copyright (c) 2018 Contributors to the Eclipse Foundation
 #
-#      https://www.apache.org/licenses/LICENSE-2.0
+# See the NOTICE file(s) with this work for additional
+# information regarding copyright ownership.
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# This program and the accompanying materials are made
+# available under the terms of the Apache Software License 2.0
+# which is available at https://www.apache.org/licenses/LICENSE-2.0.
 #
-################################################################################
+# SPDX-License-Identifier: Apache-2.0
+# ********************************************************************************
 
 ################################################################################
 #
@@ -89,7 +86,7 @@ doAnyBuildVariantOverrides() {
 # Set the working directory for this build
 setWorkingDirectory() {
   if [ -z "${BUILD_CONFIG[WORKSPACE_DIR]}" ]; then
-    if [[ "${BUILD_CONFIG[USE_DOCKER]}" == "true" ]]; then
+    if [[ "${BUILD_CONFIG[CONTAINER_COMMAND]}" == "true" ]]; then
       BUILD_CONFIG[WORKSPACE_DIR]="/openjdk/"
     else
       BUILD_CONFIG[WORKSPACE_DIR]="$PWD/workspace"
@@ -106,16 +103,21 @@ setWorkingDirectory() {
 determineBuildProperties() {
   local build_type=
   local default_build_full_name=
-  # From jdk12 there is no build type in the build output directory name
-  if [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK12_CORE_VERSION}" ] ||
-    [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK13_CORE_VERSION}" ] ||
-    [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK14_CORE_VERSION}" ] ||
-    [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK15_CORE_VERSION}" ] ||
-    [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDKHEAD_CORE_VERSION}" ]; then
-    build_type=normal
-    default_build_full_name=${BUILD_CONFIG[OS_KERNEL_NAME]}-${BUILD_CONFIG[OS_ARCHITECTURE]}-${BUILD_CONFIG[JVM_VARIANT]}-release
+  if [ -z "${BUILD_CONFIG[USER_OPENJDK_BUILD_ROOT_DIRECTORY]}" ] ; then
+    # From jdk12 there is no build type in the build output directory name
+    if [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK12_CORE_VERSION}" ] ||
+      [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK13_CORE_VERSION}" ] ||
+      [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK14_CORE_VERSION}" ] ||
+      [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK15_CORE_VERSION}" ] ||
+      [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDKHEAD_CORE_VERSION}" ]; then
+      build_type=normal
+      default_build_full_name=${BUILD_CONFIG[OS_KERNEL_NAME]}-${BUILD_CONFIG[OS_ARCHITECTURE]}-${BUILD_CONFIG[JVM_VARIANT]}-release
+    else
+      default_build_full_name=${BUILD_CONFIG[OS_KERNEL_NAME]}-${BUILD_CONFIG[OS_ARCHITECTURE]}-${build_type}-${BUILD_CONFIG[JVM_VARIANT]}-release
+    fi
   else
-    default_build_full_name=${BUILD_CONFIG[OS_KERNEL_NAME]}-${BUILD_CONFIG[OS_ARCHITECTURE]}-${build_type}-${BUILD_CONFIG[JVM_VARIANT]}-release
+    # User defined build output directory
+    default_build_full_name="${BUILD_CONFIG[USER_OPENJDK_BUILD_ROOT_DIRECTORY]}"
   fi
   BUILD_CONFIG[BUILD_FULL_NAME]=${BUILD_CONFIG[BUILD_FULL_NAME]:-"$default_build_full_name"}
 }
@@ -168,6 +170,7 @@ setVariablesForConfigure() {
 setRepository() {
 
   local suffix
+  local githubRepoName=$(getOpenjdkGithubRepoName "${BUILD_CONFIG[OPENJDK_FOREST_NAME]}")
 
   # Location of Extensions for OpenJ9 project
   if [[ "${BUILD_CONFIG[BUILD_VARIANT]}" == "${BUILD_VARIANT_OPENJ9}" ]]; then
@@ -191,17 +194,19 @@ setRepository() {
     suffix="openjdk/aarch32-port-jdk8u";
   elif [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK8_CORE_VERSION}" ] && [[ "${BUILD_CONFIG[OS_FULL_VERSION]}" == *"Alpine"* ]] && [[ "${BUILD_CONFIG[BUILD_VARIANT]}" == "${BUILD_VARIANT_TEMURIN}" ]]; then
     suffix="adoptium/alpine-jdk8u";
+  elif [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK11_CORE_VERSION}" ] && [ "${BUILD_CONFIG[OS_ARCHITECTURE]}" == "riscv64" ] && [[ "${BUILD_CONFIG[BUILD_VARIANT]}" == "${BUILD_VARIANT_TEMURIN}" ]]; then
+    suffix="adoptium/riscv-port-jdk11u"
   elif [[ "${BUILD_CONFIG[BUILD_VARIANT]}" == "${BUILD_VARIANT_HOTSPOT}" ]] && [ "${BUILD_CONFIG[OS_ARCHITECTURE]}" == "riscv64" ]; then
     if [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK8_CORE_VERSION}" ] \
       || [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK11_CORE_VERSION}" ]; then
       suffix="openjdk/riscv-port-${BUILD_CONFIG[OPENJDK_FOREST_NAME]}"
     else
-      suffix="openjdk/${BUILD_CONFIG[OPENJDK_FOREST_NAME]}"
+      suffix="openjdk/${githubRepoName}"
     fi
   elif [[ "${BUILD_CONFIG[BUILD_VARIANT]}" == "${BUILD_VARIANT_TEMURIN}" ]]; then
-    suffix="adoptium/${BUILD_CONFIG[OPENJDK_FOREST_NAME]}"
+    suffix="adoptium/${githubRepoName}"
   else
-    suffix="openjdk/${BUILD_CONFIG[OPENJDK_FOREST_NAME]}"
+    suffix="openjdk/${githubRepoName}"
   fi
 
   local repository
@@ -215,6 +220,30 @@ setRepository() {
   repository="$(echo "${repository}" | awk '{print tolower($0)}')"
 
   BUILD_CONFIG[REPOSITORY]="${BUILD_CONFIG[REPOSITORY]:-${repository}}"
+
+  echo "Using source repository ${BUILD_CONFIG[REPOSITORY]}"
+}
+
+# Given a forest_name (eg.jdk23), return the corresponding repository name
+getOpenjdkGithubRepoName() {
+  local forest_name="$1"
+  local repoName=""
+
+  # "Update" versions are currently in a repository with the name of the forest
+  if [[ ${forest_name} == *u ]]; then
+    repoName="${forest_name}"
+  else
+    local featureNumber=$(echo "${forest_name}" | tr -d "[:alpha:]")
+
+    # jdk-23+ stabilisation versions are within the jdk(head) repository
+    if [[ "${featureNumber}" -ge 23 ]]; then
+      repoName="jdk"
+    else
+      repoName="${forest_name}"
+    fi
+  fi
+
+  echo "${repoName}"
 }
 
 # Specific architectures need to have special build settings
@@ -232,34 +261,44 @@ processArgumentsforSpecificArchitectures() {
       jvm_variant=server
     fi
 
-    if [ "${BUILD_CONFIG[OPENJDK_FEATURE_NUMBER]}" -ge 12 ]; then
-      build_full_name=linux-s390x-${jvm_variant}-release
+    # Determine correct autoconf configuration name
+    if [ -z "${BUILD_CONFIG[USER_OPENJDK_BUILD_ROOT_DIRECTORY]}" ] ; then
+      if [ "${BUILD_CONFIG[OPENJDK_FEATURE_NUMBER]}" -ge 12 ]; then
+        build_full_name=linux-s390x-${jvm_variant}-release
+      else
+        build_full_name=linux-s390x-normal-${jvm_variant}-release
+      fi
     else
-      build_full_name=linux-s390x-normal-${jvm_variant}-release
+      build_full_name="${BUILD_CONFIG[USER_OPENJDK_BUILD_ROOT_DIRECTORY]}"
     fi
 
     # This is to ensure consistency with the defaults defined in setMakeArgs()
     if [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK8_CORE_VERSION}" ]; then
-      make_args_for_any_platform="CONF=${build_full_name} DEBUG_BINARIES=true images"
+      make_args_for_any_platform="DEBUG_BINARIES=true images"
     # Don't produce a JRE
     elif [ "${BUILD_CONFIG[CREATE_JRE_IMAGE]}" == "false" ]; then
-      make_args_for_any_platform="CONF=${build_full_name} DEBUG_BINARIES=true product-images"
+      make_args_for_any_platform="DEBUG_BINARIES=true product-images"
     else
-      make_args_for_any_platform="CONF=${build_full_name} DEBUG_BINARIES=true product-images legacy-jre-image"
+      make_args_for_any_platform="DEBUG_BINARIES=true product-images legacy-jre-image"
     fi
     ;;
 
   "ppc64le")
     jvm_variant=server
 
-    if [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK12_CORE_VERSION}" ] ||
-      [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK13_CORE_VERSION}" ] ||
-      [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK14_CORE_VERSION}" ] ||
-      [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK15_CORE_VERSION}" ] ||
-      [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDKHEAD_CORE_VERSION}" ]; then
-      build_full_name=linux-ppc64-${jvm_variant}-release
+    # Determine correct autoconf configuration name
+    if [ -z "${BUILD_CONFIG[USER_OPENJDK_BUILD_ROOT_DIRECTORY]}" ] ; then
+      if [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK12_CORE_VERSION}" ] ||
+        [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK13_CORE_VERSION}" ] ||
+        [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK14_CORE_VERSION}" ] ||
+        [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK15_CORE_VERSION}" ] ||
+        [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDKHEAD_CORE_VERSION}" ]; then
+        build_full_name=linux-ppc64-${jvm_variant}-release
+      else
+        build_full_name=linux-ppc64-normal-${jvm_variant}-release
+      fi
     else
-      build_full_name=linux-ppc64-normal-${jvm_variant}-release
+      build_full_name="${BUILD_CONFIG[USER_OPENJDK_BUILD_ROOT_DIRECTORY]}"
     fi
 
     if [ "$(command -v rpm)" ]; then
@@ -371,5 +410,7 @@ configure_build() {
   setWorkingDirectory
   configureMacFreeFont
   setMakeArgs
-  setBootJdk
+  if [ "${BUILD_CONFIG[CONTAINER_COMMAND]}" == false ] ; then
+    setBootJdk
+  fi
 }

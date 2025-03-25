@@ -1,4 +1,17 @@
 #!/bin/bash
+# ********************************************************************************
+# Copyright (c) 2023 Contributors to the Eclipse Foundation
+#
+# See the NOTICE file(s) with this work for additional
+# information regarding copyright ownership.
+#
+# This program and the accompanying materials are made
+# available under the terms of the Apache Software License 2.0
+# which is available at https://www.apache.org/licenses/LICENSE-2.0.
+#
+# SPDX-License-Identifier: Apache-2.0
+# ********************************************************************************
+
 #
 # Adoptium download and SBOM validation utility
 # Takes a tagged build as a parameter and downloads it from the
@@ -20,10 +33,10 @@
 set -euo pipefail
 
 WORKSPACE=${WORKSPACE:-"$PWD"}
-VERBOSE=false
 KEEP_STAGING=false
 SKIP_DOWNLOADING=false
 USE_ANSI=false
+VERBOSE=false
 
 MAJOR_VERSION=""
 
@@ -147,8 +160,8 @@ download_release_files() {
 
   cd "${WORKSPACE}/staging/${TAG}" || exit 1
 
-  # Early access versions are currently in a different format
-  if echo "${TAG}" | grep ea-beta; then
+  # Check for old format ea-beta whose browser_download_url was a different format
+  if echo "${TAG}" | grep "^jdk${MAJOR_VERSION}u-.*-beta" > /dev/null; then
     filter="ea_${MAJOR_VERSION}"
   else
     # shellcheck disable=SC2001
@@ -157,11 +170,13 @@ download_release_files() {
 
   # Parse the releases list for the one we want and download everything in it
   # shellcheck disable=SC2013
-  for url in $(grep "${filter}" "${jdk_releases}" | awk -F'"' '/browser_download_url/{print$4}'); do
+  echo "$(date +%T) : Starting downloads ..."
+  grep "${filter}" "${jdk_releases}" | awk -F'"' '/browser_download_url/{print$4}' | while read -r url; do
     # shellcheck disable=SC2046
     print_verbose "IVT : Downloading $(basename "$url")"
     curl -LORsS -C - "$url"
   done
+  echo "$(date +%T) : Finished downloads ..."
 }
 
 ########################################################################################################################
@@ -194,12 +209,16 @@ verify_gpg_signatures() {
 
   cd "${WORKSPACE}/staging/${TAG}" || exit 1
 
-  # Note: This will run into problems if there are no tar.gz files
-  #       e.g. if only windows has been uploaded to the release
-  for A in OpenJDK*.tar.gz OpenJDK*.zip *.msi *.pkg *sbom*[0-9].json; do
+  # Note: This SC disable is because the change has been made to
+  #       use ls instead of a straight glob to avoid problems when
+  #       there are no files of a particular type in the release
+  #       e.g. a point release for one platform e.g. 22.0.1.1+1
+
+  # shellcheck disable=SC2045
+  for A in $(ls -1d OpenJDK*.tar.gz OpenJDK*.zip ./*.msi ./*.pkg ./*sbom*[0-9].json); do
     print_verbose "IVT : Verifying signature of file ${A}"
 
-    if ! gpg -q --verify "${A}.sig" "${A}"; then
+    if ! gpg -q --verify "${A}.sig" "${A}" 2> /dev/null; then
       print_error "GPG signature verification failed for ${A}"
       RC=2
     fi
@@ -224,31 +243,56 @@ verify_valid_archives() {
 
   cd "${WORKSPACE}/staging/${TAG}" || exit 1
 
-  for A in OpenJDK*.tar.gz; do
-    print_verbose "IVT : Counting files in tarball ${A}"
+  # Check to prevent script aborting if no such files exist
+  if ls OpenJDK*.tar.gz > /dev/null; then
+    for A in OpenJDK*.tar.gz; do
+      print_verbose "IVT : Counting files in tarball ${A}"
+      if ! tar tfz "${A}" > /dev/null; then
+        print_error "Failed to verify that ${A} can be extracted"
+        RC=4
+      fi
+      # NOTE: 38 chosen because the static-libs is 38 for JDK21/AIX - maybe switch for different tarballs in the future?
+      if [ "$(tar tfz "${A}" | wc -l)" -lt 38 ]; then
+        print_error "Less than 38 files in ${A} - that does not seem correct"
+        RC=4
+      fi
+    done
+  fi
 
-    if ! tar tfz "${A}" > /dev/null; then
-      print_error "Failed to verify that ${A} can be extracted"
-      RC=4
-    fi
-    # NOTE: 40 chosen because the static-libs is in the 40s - maybe switch for different tarballs in the future?
-    if [ "$(tar tfz "${A}" | wc -l)" -lt 40 ]; then
-      print_error "Less than 40 files in ${A} - that does not seem correct"
-      RC=4
-    fi
-  done
+  if ls OpenJDK*.zip > /dev/null; then
+    for A in OpenJDK*.zip; do
+      print_verbose "IVT : Counting files in archive ${A}"
+      if ! unzip -t "${A}" > /dev/null; then
+        print_error "Failed to verify that ${A} can be extracted"
+        RC=4
+      fi
+      if [ "$(unzip -l "${A}" | wc -l)" -lt 44 ]; then
+        print_error "Less than 40 files in ${A} - that does not seem correct"
+        RC=4
+      fi
+    done
+  fi
 
-  for A in OpenJDK*.zip; do
-    print_verbose "IVT : Counting files in archive ${A}"
-    if ! unzip -t "${A}" > /dev/null; then
-      print_error "Failed to verify that ${A} can be extracted"
+  # If there was an x64 linux version in the release, check for source archive
+  if ls OpenJDK*-jdk_x64_linux_hotspot_*.tar.gz > /dev/null; then
+    if ls OpenJDK*-jdk-sources*.tar.gz > /dev/null; then
+      for A in OpenJDK*-jdk-sources*.tar.gz; do
+        print_verbose "IVT : Counting files in source ${A}"
+        if ! tar tfz "${A}" > /dev/null; then
+          print_error "Failed to verify that ${A} can be extracted"
+          RC=4
+        fi
+        if [ "$(tar tfz "${A}" | wc -l)" -lt 45000 ]; then
+          print_error "less than 45000 files in source archive ${A} - that does not seem correct"
+          RC=4
+        fi
+      done
+    else
+      print_error "IVT: x64 linux tarballs present but no source archive - they should be published together"
       RC=4
     fi
-    if [ "$(unzip -l "${A}" | wc -l)" -lt 44 ]; then
-      print_error "Less than 40 files in ${A} - that does not seem correct"
-      RC=4
-    fi
-  done
+  fi
+        
 }
 
 ########################################################################################################################
@@ -291,14 +335,18 @@ determine_arch() {
 #
 ########################################################################################################################
 verify_working_executables() {
-  print_verbose "IVT : Running java -version and checking glibc version on ${OS}/${ARCH} tarballs"
+  if ! ls OpenJDK*-jre_"${ARCH}"_"${OS}"_hotspot_*.tar.gz > /dev/null 2>&1; then
+    print_verbose "IVT: Release does not contain a JRE for $OS/$ARCH so not running local checks"
+  else
+    print_verbose "IVT : Running java -version and checking glibc version on ${OS}/${ARCH} tarballs"
 
-  cd "${WORKSPACE}/staging/${TAG}" || exit 1
+    cd "${WORKSPACE}/staging/${TAG}" || exit 1
 
-  rm -rf tarballtest && mkdir tarballtest
-  tar -C tarballtest --strip-components=1 -xzpf OpenJDK*-jre_"${ARCH}"_"${OS}"_hotspot_*.tar.gz && tarballtest/bin/java -version || exit 3
-  rm -rf tarballtest && mkdir tarballtest
-  tar -C tarballtest --strip-components=1 -xzpf OpenJDK*-jdk_"${ARCH}"_"${OS}"_hotspot_*.tar.gz && tarballtest/bin/java -version || exit 3
+    rm -rf tarballtest && mkdir tarballtest
+    tar -C tarballtest --strip-components=1 -xzpf OpenJDK*-jre_"${ARCH}"_"${OS}"_hotspot_*.tar.gz && tarballtest/bin/java -version || exit 3
+    rm -rf tarballtest && mkdir tarballtest
+    tar -C tarballtest --strip-components=1 -xzpf OpenJDK*-jdk_"${ARCH}"_"${OS}"_hotspot_*.tar.gz && tarballtest/bin/java -version || exit 3
+  fi
 }
 
 ########################################################################################################################
@@ -313,10 +361,14 @@ verify_working_executables() {
 #
 ########################################################################################################################
 verify_glibc_version() {
-  print_verbose "IVT : Detected GLIBC version '$(strings tarballtest/bin/java | grep ^GLIBC)'"
-  if ! strings tarballtest/bin/java | grep ^GLIBC_2.17 > /dev/null; then
-    print_error "GLIBC version detected in the JDK java executable is not the expected 2.17"
-    RC=4
+  if ! ls OpenJDK*-jre_"${ARCH}"_"${OS}"_hotspot_*.tar.gz > /dev/null 2>&1; then
+    print_verbose "IVT: Release does not contain a JRE for $OS/$ARCH so not running glibc version checks"
+  else  
+    print_verbose "IVT : Detected GLIBC version '$(strings tarballtest/bin/java | grep ^GLIBC)'"
+    if ! strings tarballtest/bin/java | grep ^GLIBC_2.17 > /dev/null; then
+      print_error "GLIBC version detected in the JDK java executable is not the expected 2.17"
+      RC=4
+    fi
   fi
 }
 
@@ -331,11 +383,15 @@ verify_gcc_version() {
   # shellcheck disable=SC2166
   [ "${MAJOR_VERSION}" = "8" -o "${MAJOR_VERSION}" = "11" ] && expected_gcc=7.5.0
   [ "${MAJOR_VERSION}" = "17" ] && expected_gcc=10.3.0
-  [ "${MAJOR_VERSION}" -ge 20 ] && expected_gcc=11.2.0
+  [ "${MAJOR_VERSION}" -ge 20 ] && expected_gcc=11.3.0
 
-  if ! strings tarballtest/bin/java | grep "^GCC:.*${expected_gcc}"; then
-    print_error "GCC version detected in the JDK java executable is not the expected ${expected_gcc}"
-    RC=4
+  if ! ls OpenJDK*-jre_"${ARCH}"_"${OS}"_hotspot_*.tar.gz > /dev/null 2>&1; then
+    print_verbose "IVT: Release does not contain a JRE for $OS/$ARCH so not running local checks"
+  else
+    if ! strings tarballtest/bin/java | grep "^GCC:.*${expected_gcc}"; then
+      print_error "GCC version detected in the JDK java executable is not the expected ${expected_gcc}"
+      RC=4
+    fi
   fi
 }
 
@@ -369,12 +425,12 @@ download_cyclonedx_tool() {
   esac
 
   case "${cyclonedx_os}-${cyclonedx_arch}" in
-      linux-x64)   cyclonedx_checksum="bd26ccba454cc9f12b6860136e1b14117b829a5f27e993607ff526262c5a7ff0";;
-      linux-arm64) cyclonedx_checksum="eaac307ca4d7f3ee2a10e5fe898d7ff16c4b8054b10cc210abe6f6d703d17852";;
-      osx-x64)     cyclonedx_checksum="83ba4871298db3123dbea23f425cf23316827abcdaded16824b925f1bc69446d";;
-      osx-arm64)   cyclonedx_checksum="826c21a2ad146e0542c22fa3bf31f4a744890d89052d597c4461ec6e2302ff2d";;
-      win-x64)     cyclonedx_checksum="52d2f00545a5b380b7268ab917ba5eb31a99bcc43dbe25763e4042a9bb44a2b8";;
-      win-arm64)   cyclonedx_checksum="0a506f9e734ae3096ad41bbfd5afc0f11583db33b6f1db6dd1f6db7660d2e44e";;
+      linux-x64)   cyclonedx_checksum="5e1595542a6367378a3944bbd3008caab3de65d572345361d3b9597b1dbbaaa0";;
+      linux-arm64) cyclonedx_checksum="5b4181f6fd4d8fbe54e55c1b3983d9af66ce2910a263814b290cbd5e351e68a4";;
+      osx-x64)     cyclonedx_checksum="331c2245ef7dadf09fa3d2710a2aaab071ff6bea2ba3e5df8f95a4f3f6e825e9";;
+      osx-arm64)   cyclonedx_checksum="2d24c331c2ccc5e4061722bd4780c8b295041b2569d130bbe80cf7da95b97171";;
+      win-x64)     cyclonedx_checksum="bb26bb56293ebe6f08fa63d2bf50653fc6b180174fded975c81ac96ac192a7db";;
+      win-arm64)   cyclonedx_checksum="35762d3e1979576f474ffc1c5b2273e19c33cdca44e5f1994c3de5d9cd0e9c1d";;
       *)           cyclonedx_checksum="";;
   esac
 
@@ -386,7 +442,7 @@ download_cyclonedx_tool() {
 
     cyclonedx_tool="cyclonedx-${cyclonedx_os}-${cyclonedx_arch}${cyclonedx_suffix}"
 
-    [ ! -r "${cyclonedx_tool}" ] && curl -LOsS https://github.com/CycloneDX/cyclonedx-cli/releases/download/v0.25.0/"${cyclonedx_tool}"
+    [ ! -r "${cyclonedx_tool}" ] && curl -LOsS https://github.com/CycloneDX/cyclonedx-cli/releases/download/v0.27.2/"${cyclonedx_tool}"
     if [ "$(sha256sum "${cyclonedx_tool}" | cut -d' ' -f1)" != "${cyclonedx_checksum}" ]; then
        print_error "IVT : Cannot verify checksum of CycloneDX CLI binary"
        exit 1

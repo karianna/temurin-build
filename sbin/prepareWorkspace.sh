@@ -1,19 +1,17 @@
 #!/bin/bash
-# shellcheck disable=SC2155,SC1091,SC2196
-
-################################################################################
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# shellcheck disable=SC2155,SC1091,SC2196,SC2235
+# ********************************************************************************
+# Copyright (c) 2018 Contributors to the Eclipse Foundation
 #
-#      https://www.apache.org/licenses/LICENSE-2.0
+# See the NOTICE file(s) with this work for additional
+# information regarding copyright ownership.
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-################################################################################
+# This program and the accompanying materials are made
+# available under the terms of the Apache Software License 2.0
+# which is available at https://www.apache.org/licenses/LICENSE-2.0.
+#
+# SPDX-License-Identifier: Apache-2.0
+# ********************************************************************************
 
 ################################################################################
 #
@@ -24,11 +22,13 @@
 ################################################################################
 
 set -eu
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # shellcheck source=sbin/common/constants.sh
 source "$SCRIPT_DIR/common/constants.sh"
+
+# shellcheck source=sbin/common/common.sh
+source "$SCRIPT_DIR/common/common.sh"
 
 # Set default versions for 3 libraries that OpenJDK relies on to build
 
@@ -37,6 +37,79 @@ ALSA_LIB_CHECKSUM=${ALSA_LIB_CHECKSUM:-5f2cd274b272cae0d0d111e8a9e363f0878332915
 ALSA_LIB_GPGKEYID=${ALSA_LIB_GPGKEYID:-A6E59C91}
 FREETYPE_FONT_SHARED_OBJECT_FILENAME="libfreetype.so*"
 
+# sha256 of https://github.com/adoptium/devkit-binaries/releases/tag/vs2022_redist_14.40.33807_10.0.26100.1742
+WINDOWS_REDIST_CHECKSUM="ac6060f5f8a952f59faef20e53d124c2c267264109f3f6fabeb2b7aefb3e3c62"
+
+copyFromDir() {
+  echo "Copying OpenJDK source from  ${BUILD_CONFIG[OPENJDK_LOCAL_SOURCE_ARCHIVE_ABSPATH]} to $(pwd)/${BUILD_CONFIG[OPENJDK_SOURCE_DIR]} to be built"
+  # We really do not want to use .git for dirs, as we expect user have them set up, ignoring them
+  local files=$(find "${BUILD_CONFIG[OPENJDK_LOCAL_SOURCE_ARCHIVE_ABSPATH]}" -maxdepth 1 -mindepth 1 | grep -v -e "/workspace$" -e "/build$" -e "/.git" -e -"/build/")
+  # SC2086 (info): Double quote to prevent globbing and word splitting.
+  # globbing is intentional here
+  # shellcheck disable=SC2086
+  cp -rf $files "./${BUILD_CONFIG[OPENJDK_SOURCE_DIR]}/"
+}
+
+# this is workarounding --strip-components 1 missing on gnu tar
+# it requires  absolute tar-filepath as it changes dir and is hardcoded to one
+# similar approach can be used also for zip in future
+# warning! this method do not merge if (parts of!) destination exists.
+unpackGnuAbsPathWithStrip1Component() {
+  local tmp=$(mktemp -d)
+  pushd "$tmp" > /dev/null
+    "$@"
+  popd  > /dev/null
+  mv "$tmp"/*/* .
+  mv "$tmp"/*/.* . || echo "no hidden files in tarball"
+  rmdir "$tmp"/*
+  rmdir "$tmp"
+}
+
+untarGnuAbsPathWithStrip1Component() {
+  unpackGnuAbsPathWithStrip1Component tar -xf "$@"
+}
+
+unzipGnuAbsPathWithStrip1Component() {
+  unpackGnuAbsPathWithStrip1Component unzip "$@"
+}
+
+unpackFromArchive() {
+  echo "Extracting OpenJDK source tarball ${BUILD_CONFIG[OPENJDK_LOCAL_SOURCE_ARCHIVE_ABSPATH]} to $(pwd)/${BUILD_CONFIG[OPENJDK_SOURCE_DIR]} to build the binary"
+  # If the tarball contains .git files, they should be ignored later
+  pushd "./${BUILD_CONFIG[OPENJDK_SOURCE_DIR]}"
+    if [ "${BUILD_CONFIG[OPENJDK_LOCAL_SOURCE_ARCHIVE_ABSPATH]: -4}" == ".zip" ] ; then
+        echo "Source zip unpacked as if it contains exactly one directory"
+        unzipGnuAbsPathWithStrip1Component "${BUILD_CONFIG[OPENJDK_LOCAL_SOURCE_ARCHIVE_ABSPATH]}"
+    else
+      local topLevelItems=$(tar --exclude='*/*' -tf  "${BUILD_CONFIG[OPENJDK_LOCAL_SOURCE_ARCHIVE_ABSPATH]}" | grep "/$" -c) || local topLevelItems=1
+      if [ "$topLevelItems" -eq "1" ] ; then
+        echo "Source tarball contains exactly one directory"
+        untarGnuAbsPathWithStrip1Component "${BUILD_CONFIG[OPENJDK_LOCAL_SOURCE_ARCHIVE_ABSPATH]}"
+      else
+        echo "Source tarball does not contain a top level directory"
+        tar -xf "${BUILD_CONFIG[OPENJDK_LOCAL_SOURCE_ARCHIVE_ABSPATH]}"
+      fi
+    fi
+    rm -rf "build"
+  popd
+}
+
+copyFromDirOrUnpackFromArchive() {
+  echo "Cleaning the copy of OpenJDK source repository from $(pwd)/${BUILD_CONFIG[OPENJDK_SOURCE_DIR]} and replacing with a fresh copy in 10 seconds..."
+  verboseSleep	 10
+  rm -rf "./${BUILD_CONFIG[OPENJDK_SOURCE_DIR]}"
+  mkdir  "./${BUILD_CONFIG[OPENJDK_SOURCE_DIR]}"
+  # Note that we are not persisting the build directory
+  if [ -d "${BUILD_CONFIG[OPENJDK_LOCAL_SOURCE_ARCHIVE_ABSPATH]}" ] ; then
+    copyFromDir
+  elif [ -f "${BUILD_CONFIG[OPENJDK_LOCAL_SOURCE_ARCHIVE_ABSPATH]}" ] ; then
+    unpackFromArchive
+  else
+    echo "${BUILD_CONFIG[OPENJDK_LOCAL_SOURCE_ARCHIVE_ABSPATH]} is not a directory or a file "
+    exit 1
+  fi
+}
+
 # Create a new clone or update the existing clone of the OpenJDK source repo
 # TODO refactor this for Single Responsibility Principle (SRP)
 checkoutAndCloneOpenJDKGitRepo() {
@@ -44,7 +117,7 @@ checkoutAndCloneOpenJDKGitRepo() {
   cd "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}"
 
   # Check that we have a git repo, we assume that it is a repo that contains openjdk source
-  if [ -d "${BUILD_CONFIG[OPENJDK_SOURCE_DIR]}/.git" ]; then
+  if [ -d "${BUILD_CONFIG[OPENJDK_SOURCE_DIR]}/.git" ] && [ "${BUILD_CONFIG[OPENJDK_LOCAL_SOURCE_ARCHIVE]}" == "false" ]; then
     set +e
     git --git-dir "${BUILD_CONFIG[OPENJDK_SOURCE_DIR]}/.git" remote -v
     echo "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}"
@@ -67,7 +140,7 @@ checkoutAndCloneOpenJDKGitRepo() {
     if [ "${isValidGitRepo}" == "0" ]; then
       cd "${BUILD_CONFIG[OPENJDK_SOURCE_DIR]}" || return
       echo "Resetting the git openjdk source repository at $PWD in 10 seconds..."
-      sleep 10
+      verboseSleep 10
       echo "Pulling latest changes from git openjdk source repository"
     elif [ "${BUILD_CONFIG[CLEAN_GIT_REPO]}" == "true" ]; then
       echo "Removing current git repo as it is the wrong type"
@@ -78,6 +151,8 @@ checkoutAndCloneOpenJDKGitRepo() {
       echo "If this is inside a docker you can purge the existing source by passing --clean-docker-build"
       exit 1
     fi
+  elif [ "${BUILD_CONFIG[OPENJDK_LOCAL_SOURCE_ARCHIVE]}" == "true" ]; then
+    copyFromDirOrUnpackFromArchive
   elif [ ! -d "${BUILD_CONFIG[OPENJDK_SOURCE_DIR]}/.git" ]; then
     echo "Could not find a valid openjdk git repository at $(pwd)/${BUILD_CONFIG[OPENJDK_SOURCE_DIR]} so re-cloning the source to openjdk"
     rm -rf "${BUILD_CONFIG[WORKSPACE_DIR]:?}/${BUILD_CONFIG[WORKING_DIR]}/${BUILD_CONFIG[OPENJDK_SOURCE_DIR]}"
@@ -106,8 +181,9 @@ checkoutAndCloneOpenJDKGitRepo() {
     fi
   fi
 
-  git clean -ffdx
-
+  if [ "${BUILD_CONFIG[OPENJDK_LOCAL_SOURCE_ARCHIVE]}" == "false" ]; then
+    git clean -ffdx
+  fi
   updateOpenj9Sources
 
   createSourceTagFile
@@ -118,6 +194,17 @@ checkoutAndCloneOpenJDKGitRepo() {
 # Checkout the required code to build from the given cached git repo
 # Set checkoutRc to result so we can retry
 checkoutRequiredCodeToBuild() {
+
+  if [ "${BUILD_CONFIG[OPENJDK_LOCAL_SOURCE_ARCHIVE]}" == "true" ]; then
+    echo "Skipping checkoutRequiredCodeToBuild - local directory under processing:"
+    echo "  workspace = ${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/${BUILD_CONFIG[OPENJDK_SOURCE_DIR]}"
+    echo "  BUILD_VARIANT = ${BUILD_CONFIG[BUILD_VARIANT]}"
+    echo "  TAG = ${BUILD_CONFIG[TAG]} - Used only in name, if at all"
+    echo "  BRANCH = ${BUILD_CONFIG[BRANCH]} - UNUSED!"
+    checkoutRc=0
+    return
+  fi
+
   checkoutRc=1
 
   cd "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/${BUILD_CONFIG[OPENJDK_SOURCE_DIR]}"
@@ -279,7 +366,7 @@ updateOpenj9Sources() {
   if [ "${BUILD_CONFIG[BUILD_VARIANT]}" == "${BUILD_VARIANT_OPENJ9}" ]; then
     cd "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/${BUILD_CONFIG[OPENJDK_SOURCE_DIR]}" || return
     # NOTE: fetched openssl will NOT be used in the RISC-V cross-compile situation
-    bash get_source.sh --openssl-version=3.0.12
+    bash get_source.sh -openssl-branch=openssl-3.0.16
     cd "${BUILD_CONFIG[WORKSPACE_DIR]}"
   fi
 }
@@ -298,10 +385,22 @@ createWorkspace() {
   umask 022
   mkdir -p "${BUILD_CONFIG[WORKSPACE_DIR]}" || exit
   mkdir -p "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}" || exit
+
+  # If a user supplied OpenJDK build root directory has been specified and it is not empty
+  # then fail with an error, we don't want to delete it in case user has specified a wrong directory
+  # Ensure the directory is created if it doesn't exist
+  if [[ -n "${BUILD_CONFIG[USER_OPENJDK_BUILD_ROOT_DIRECTORY]}" ]]; then
+    if [[ -d "${BUILD_CONFIG[USER_OPENJDK_BUILD_ROOT_DIRECTORY]}" ]] && [[ "$(ls -A "${BUILD_CONFIG[USER_OPENJDK_BUILD_ROOT_DIRECTORY]}")" ]]; then
+      echo "ERROR: Existing user supplied OpenJDK build root directory ${BUILD_CONFIG[USER_OPENJDK_BUILD_ROOT_DIRECTORY]} is not empty"
+      exit 1
+    fi
+    mkdir -p "${BUILD_CONFIG[USER_OPENJDK_BUILD_ROOT_DIRECTORY]}" || exit
+  fi
 }
 
 # ALSA first for sound
 checkingAndDownloadingAlsa() {
+
   cd "${BUILD_CONFIG[WORKSPACE_DIR]}/libs/" || exit
 
   echo "Checking for ALSA"
@@ -315,21 +414,12 @@ checkingAndDownloadingAlsa() {
     echo "Skipping ALSA download"
   else
 
-    ALSA_BUILD_URL="https://ftp.osuosl.org/pub/blfs/conglomeration/alsa-lib/alsa-lib-${ALSA_LIB_VERSION}.tar.bz2"
+    ALSA_BUILD_URL="https://ftp2.osuosl.org/pub/blfs/conglomeration/alsa-lib/alsa-lib-${ALSA_LIB_VERSION}.tar.bz2"
     curl -o "alsa-lib.tar.bz2" "$ALSA_BUILD_URL"
     curl -o "alsa-lib.tar.bz2.sig" "https://www.alsa-project.org/files/pub/lib/alsa-lib-${ALSA_LIB_VERSION}.tar.bz2.sig"
 
-    ## This affects Alpine docker images and also evaluation pipelines
-    if [ "$(pwd | wc -c)" -gt 83 ]; then
-      # Use /tmp for alpine in preference to $HOME as Alpine fails gpg operation if PWD > 83 characters
-      # Alpine also cannot create ~/.gpg-temp within a docker context
-      export GNUPGHOME="/tmp/.gpg-temp.$$"
-    else
-      export GNUPGHOME="${WORKSPACE:-$PWD}/.gpg-temp"
-    fi
+    setupGpg
 
-    echo "GNUPGHOME=$GNUPGHOME"
-    mkdir -p "$GNUPGHOME" && chmod og-rwx "$GNUPGHOME"
     # Should we clear this directory up after checking?
     # Would this risk removing anyone's existing dir with that name?
     # Erring on the side of caution for now
@@ -343,7 +433,7 @@ checkingAndDownloadingAlsa() {
         break
       elif [[ ${i} -lt 10 ]]; then
         echo "gpg recv-keys attempt has failed. Retrying after 10 second pause..."
-        sleep 10s
+        verboseSleep 10
       else
         echo "ERROR: gpg recv-keys final attempt has failed. Will not try again."
       fi
@@ -562,14 +652,181 @@ prepareMozillaCacerts() {
     fi
 }
 
-# Download all of the dependencies for OpenJDK (Alsa, FreeType etc.)
+# Create and setup GNUPGHOME
+setupGpg() {
+    ## This affects riscv64 & Alpine docker images and also evaluation pipelines
+    if ( [ -r /etc/alpine-release ] && [ "$(pwd | wc -c)" -gt 83 ] ) || \
+       ( [ "${BUILD_CONFIG[OS_KERNEL_NAME]}" == "linux" ] && [ "${BUILD_CONFIG[OS_ARCHITECTURE]}" == "riscv64" ] && [ "$(pwd | wc -c)" -gt 83 ] ); then
+        # Use /tmp in preference to $HOME as fails gpg operation if PWD > 83 characters
+        # Also cannot create ~/.gpg-temp within a docker context
+        GNUPGHOME="$(mktemp -d /tmp/.gpg-temp.XXXXXX)"
+    else
+        GNUPGHOME="${BUILD_CONFIG[WORKSPACE_DIR]:-$PWD}/.gpg-temp"
+    fi
+    if [ ! -d "$GNUPGHOME" ]; then
+        mkdir -m 700 "$GNUPGHOME"
+    fi
+    export GNUPGHOME
+
+    echo "GNUPGHOME=$GNUPGHOME"
+}
+
+# Download the required Linux DevKit if necessary and not available in /usr/local/devkit
+downloadLinuxDevkit() {
+    local devkit_target="${BUILD_CONFIG[OS_ARCHITECTURE]}-linux-gnu"
+
+    local USR_LOCAL_DEVKIT="/usr/local/devkit/${BUILD_CONFIG[USE_ADOPTIUM_DEVKIT]}"
+    if [[ -d "${USR_LOCAL_DEVKIT}" ]]; then
+      local usrLocalDevkitInfo="${USR_LOCAL_DEVKIT}/devkit.info"
+       if ! grep "ADOPTIUM_DEVKIT_RELEASE=${BUILD_CONFIG[USE_ADOPTIUM_DEVKIT]}" "${usrLocalDevkitInfo}" || ! grep "ADOPTIUM_DEVKIT_TARGET=${devkit_target}" "${usrLocalDevkitInfo}"; then
+        echo "WARNING: Devkit ${usrLocalDevkitInfo} does not match required release and architecture:"
+        echo "       Required:   ADOPTIUM_DEVKIT_RELEASE=${BUILD_CONFIG[USE_ADOPTIUM_DEVKIT]}"
+        echo "       ${USR_LOCAL_DEVKIT}: $(grep ADOPTIUM_DEVKIT_RELEASE= "${usrLocalDevkitInfo}")"
+        echo "       Required:   ADOPTIUM_DEVKIT_TARGET=${devkit_target}"
+        echo "       ${USR_LOCAL_DEVKIT}: $(grep ADOPTIUM_DEVKIT_TARGET= "${usrLocalDevkitInfo}")"
+        echo "Attempting to download the required DevKit instead"
+      else
+        # Found a matching DevKit
+        echo "Using matching DevKit from location ${USR_LOCAL_DEVKIT}"
+        BUILD_CONFIG[ADOPTIUM_DEVKIT_LOCATION]="${USR_LOCAL_DEVKIT}"
+      fi
+    fi
+
+    # Download from adoptium/devkit-runtimes if we have not found a matching one locally
+    if [[ -z "${BUILD_CONFIG[ADOPTIUM_DEVKIT_LOCATION]}" ]]; then
+      local devkit_tar="${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/devkit/devkit.tar.xz"
+
+      setupGpg
+
+      # Determine DevKit tarball to download for this arch and release
+      local devkitUrl="https://github.com/adoptium/devkit-binaries/releases/download/${BUILD_CONFIG[USE_ADOPTIUM_DEVKIT]}"
+      local devkit="devkit-${BUILD_CONFIG[USE_ADOPTIUM_DEVKIT]}-${devkit_target}"
+
+      # Download tarball and GPG sig
+      echo "Downloading DevKit : ${devkitUrl}/${devkit}.tar.xz"
+      curl -L --fail --silent --show-error -o "${devkit_tar}" "${devkitUrl}/${devkit}.tar.xz"
+      curl -L --fail --silent --show-error -o "${devkit_tar}.sig" "${devkitUrl}/${devkit}.tar.xz.sig"
+
+      # GPG verify
+      gpg --keyserver keyserver.ubuntu.com --recv-keys 3B04D753C9050D9A5D343F39843C48A565F8F04B
+      echo -e "5\ny\n" |  gpg --batch --command-fd 0 --expert --edit-key 3B04D753C9050D9A5D343F39843C48A565F8F04B trust;
+      gpg --verify "${devkit_tar}.sig" "${devkit_tar}" || exit 1
+
+      tar xpJf "${devkit_tar}" -C "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/devkit"
+      rm "${devkit_tar}"
+      rm "${devkit_tar}.sig"
+
+      # Validate devkit.info matches value passed in and current architecture
+      local devkitInfo="${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/devkit/devkit.info"
+      if ! grep "ADOPTIUM_DEVKIT_RELEASE=${BUILD_CONFIG[USE_ADOPTIUM_DEVKIT]}" "${devkitInfo}" || ! grep "ADOPTIUM_DEVKIT_TARGET=${devkit_target}" "${devkitInfo}"; then
+        echo "ERROR: Devkit does not match required release and architecture:"
+        echo "       Required:   ADOPTIUM_DEVKIT_RELEASE=${BUILD_CONFIG[USE_ADOPTIUM_DEVKIT]}"
+        echo "       Downloaded: $(grep ADOPTIUM_DEVKIT_RELEASE= "${devkitInfo}")"
+        echo "       Required:   ADOPTIUM_DEVKIT_TARGET=${devkit_target}"
+        echo "       Downloaded: $(grep ADOPTIUM_DEVKIT_TARGET= "${devkitInfo}")"
+        exit 1
+      fi
+
+      BUILD_CONFIG[ADOPTIUM_DEVKIT_LOCATION]="${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/devkit"
+    fi
+}
+
+# Download the required Windows DevKit if necessary and not available in c:/openjdk/devkit
+#   For the moment this is just support for Windows Redist DLLs
+downloadWindowsDevkit() {
+    local WIN_LOCAL_DEVKIT="/cygdrive/C/openjdk/devkit/${BUILD_CONFIG[USE_ADOPTIUM_DEVKIT]}"
+    if [[ -d "${WIN_LOCAL_DEVKIT}" ]]; then
+      local winLocalDevkitInfo="${WIN_LOCAL_DEVKIT}/devkit.info"
+       if ! grep "ADOPTIUM_DEVKIT_RELEASE=${BUILD_CONFIG[USE_ADOPTIUM_DEVKIT]}" "${winLocalDevkitInfo}"; then
+        echo "WARNING: Devkit ${winLocalDevkitInfo} does not match required release:"
+        echo "       Required:   ADOPTIUM_DEVKIT_RELEASE=${BUILD_CONFIG[USE_ADOPTIUM_DEVKIT]}"
+        echo "       ${WIN_LOCAL_DEVKIT}: $(grep ADOPTIUM_DEVKIT_RELEASE= "${winLocalDevkitInfo}")"
+        echo "Attempting to download the required DevKit instead"
+      else
+        # Found a matching DevKit
+        echo "Using matching DevKit from location ${WIN_LOCAL_DEVKIT}"
+        BUILD_CONFIG[ADOPTIUM_DEVKIT_LOCATION]="${WIN_LOCAL_DEVKIT}"
+      fi
+    fi
+
+    # Download from adoptium/devkit-runtimes if we have not found a matching one locally
+    if [[ -z "${BUILD_CONFIG[ADOPTIUM_DEVKIT_LOCATION]}" ]]; then
+      local devkit_zip="${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/devkit/devkit.zip"
+
+      # Determine DevKit zip to download for this release
+      local devkitUrl="https://github.com/adoptium/devkit-binaries/releases/download/${BUILD_CONFIG[USE_ADOPTIUM_DEVKIT]}"
+      local devkit="${BUILD_CONFIG[USE_ADOPTIUM_DEVKIT]}.zip"
+
+      # Download zip
+      echo "Downloading DevKit : ${devkitUrl}/${devkit}"
+      curl -L --fail --silent --show-error -o "${devkit_zip}" "${devkitUrl}/${devkit}"
+
+      # Verify checksum
+      local expectedChecksum="${WINDOWS_REDIST_CHECKSUM}"
+      local actualChecksum=$(sha256File "${devkit_zip}")
+      if [ "${actualChecksum}" != "${expectedChecksum}" ]; then
+        echo "Failed to verify checksum on ${devkit_zip}"
+
+        echo "Expected ${expectedChecksum} got ${actualChecksum}"
+        exit 1
+      fi
+
+      unzip "${devkit_zip}" -d "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/devkit"
+      rm "${devkit_zip}"
+
+      # Validate devkit.info matches value passed in
+      local devkitInfo="${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/devkit/devkit.info"
+      if ! grep "ADOPTIUM_DEVKIT_RELEASE=${BUILD_CONFIG[USE_ADOPTIUM_DEVKIT]}" "${devkitInfo}"; then
+        echo "ERROR: Devkit does not match required release:"
+        echo "       Required:   ADOPTIUM_DEVKIT_RELEASE=${BUILD_CONFIG[USE_ADOPTIUM_DEVKIT]}"
+        echo "       Downloaded: $(grep ADOPTIUM_DEVKIT_RELEASE= "${devkitInfo}")"
+        exit 1
+      fi
+
+      BUILD_CONFIG[ADOPTIUM_DEVKIT_LOCATION]="${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/devkit"
+    fi
+}
+
+# Download the required DevKit if necessary and not available in /usr/local/devkit
+downloadDevkit() {
+  if [[ -n "${BUILD_CONFIG[USE_ADOPTIUM_DEVKIT]}" ]]; then
+    rm -rf "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/devkit"
+    mkdir -p "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/devkit"
+
+    BUILD_CONFIG[ADOPTIUM_DEVKIT_LOCATION]=""
+
+    if [ "${BUILD_CONFIG[OS_KERNEL_NAME]}" == "linux" ]; then
+      downloadLinuxDevkit
+    elif [[ "$OSTYPE" == "cygwin" ]] || [[ "$OSTYPE" == "msys" ]]; then
+      downloadWindowsDevkit
+    fi
+  fi
+}
+
+downloadBootJdkIfNeeded () {
+  if [[ "${BUILD_CONFIG[JDK_BOOT_DIR]}" == "download" ]]; then
+    local futureBootDir="${BUILD_CONFIG[WORKSPACE_DIR]}/downloaded-boot-jdk-${BUILD_CONFIG[OPENJDK_FEATURE_NUMBER]}"
+    if  [ -e "$futureBootDir" ] ; then
+      echo "Reusing $futureBootDir"
+    else
+      source "$SCRIPT_DIR/common/downloaders.sh"
+      echo "Downloading to $futureBootDir"
+      downloadBootJDK "$(uname -m)" "${BUILD_CONFIG[OPENJDK_FEATURE_NUMBER]}" "${futureBootDir}"
+    fi
+    BUILD_CONFIG[JDK_BOOT_DIR]="${futureBootDir}"
+  fi
+}
+
+# Download all of the dependencies for OpenJDK (Alsa, FreeType, boot-jdk etc.)
 downloadingRequiredDependencies() {
   if [[ "${BUILD_CONFIG[CLEAN_LIBS]}" == "true" ]]; then
     rm -rf "${BUILD_CONFIG[WORKSPACE_DIR]}/libs/freetype" || true
-
     rm -rf "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/installedalsa" || true
     rm -rf "${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/installedfreetype" || true
+    rm -rf "${BUILD_CONFIG[WORKSPACE_DIR]}/downloaded-boot-jdk-${BUILD_CONFIG[OPENJDK_FEATURE_NUMBER]}" || true
   fi
+
+  downloadBootJdkIfNeeded
 
   mkdir -p "${BUILD_CONFIG[WORKSPACE_DIR]}/libs/" || exit
   cd "${BUILD_CONFIG[WORKSPACE_DIR]}/libs/" || exit
@@ -578,7 +835,13 @@ downloadingRequiredDependencies() {
     echo "Non-Linux-based environment detected, skipping download of dependency Alsa."
   else
     echo "Checking and downloading Alsa dependency because OSTYPE=\"${OSTYPE}\""
-    checkingAndDownloadingAlsa
+    if [[ "${BUILD_CONFIG[ALSA]}" == "true" ]]; then
+      checkingAndDownloadingAlsa
+    else
+      echo ""
+      echo "---> Skipping the process of checking and downloading the Alsa dependency, a pre-built version should be provided via -C/--configure-args <---"
+      echo ""
+    fi
   fi
 
   if [[ "${BUILD_CONFIG[FREETYPE]}" == "true" ]]; then
@@ -660,13 +923,13 @@ applyPatches() {
 createSourceTagFile(){
   if [ "${BUILD_CONFIG[OPENJDK_CORE_VERSION]}" == "${JDK8_CORE_VERSION}" ]; then
     local OpenJDK_TopDir="${BUILD_CONFIG[WORKSPACE_DIR]}/${BUILD_CONFIG[WORKING_DIR]}/${BUILD_CONFIG[OPENJDK_SOURCE_DIR]}"
-    local OpenJDK_SHA=$(git -C "$OpenJDK_TopDir" rev-parse --short HEAD)
+    local OpenJDK_SHA=$(cd "$OpenJDK_TopDir" && git rev-parse --short HEAD)
     if [ "${BUILD_CONFIG[BUILD_VARIANT]}" == "${BUILD_VARIANT_OPENJ9}" ]; then
       # OpenJ9 list 3 SHA's in their release file: OpenJDK, OpenJ9, and OMR.
       local OpenJ9_TopDir="$OpenJDK_TopDir/openj9"
       local OMR_TopDir="$OpenJDK_TopDir/omr"
-      local OpenJ9_SHA=$(git -C "$OpenJ9_TopDir" rev-parse --short HEAD)
-      local OMR_SHA=$(git -C "$OMR_TopDir" rev-parse --short HEAD)
+      local OpenJ9_SHA=$(cd "$OpenJ9_TopDir" && git rev-parse --short HEAD)
+      local OMR_SHA=$(cd "$OMR_TopDir" && git rev-parse --short HEAD)
       (printf "OpenJDK: %s OpenJ9: %s OMR: %s" "$OpenJDK_SHA" "$OpenJ9_SHA" "$OMR_SHA") > "$OpenJDK_TopDir/.hgtip"
     else # Other variants only list the main repo SHA.
       (printf "OpenJDK: %s" "$OpenJDK_SHA") > "$OpenJDK_TopDir/.hgtip"
@@ -680,6 +943,7 @@ function configureWorkspace() {
   if [[ "${BUILD_CONFIG[ASSEMBLE_EXPLODED_IMAGE]}" != "true" ]]; then
     createWorkspace
     downloadingRequiredDependencies
+    downloadDevkit
     relocateToTmpIfNeeded
     checkoutAndCloneOpenJDKGitRepo
     applyPatches

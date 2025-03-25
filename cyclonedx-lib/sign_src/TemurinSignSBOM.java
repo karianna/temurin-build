@@ -1,24 +1,25 @@
-/**
- * # Licensed under the Apache License, Version 2.0 (the "License");
- * # you may not use this file except in compliance with the License.
- * # You may obtain a copy of the License at
- * #
- * #      https://www.apache.org/licenses/LICENSE-2.0
- * #
- * # Unless required by applicable law or agreed to in writing, software
- * # distributed under the License is distributed on an "AS IS" BASIS,
- * # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * # See the License for the specific language governing permissions and
- * # limitations under the License.
- * ################################################################################
+/*
+ * ********************************************************************************
+ * Copyright (c) 2023, 2024 Contributors to the Eclipse Foundation
+ *
+ * See the NOTICE file(s) with this work for additional
+ * information regarding copyright ownership.
+ *
+ * This program and the accompanying materials are made
+ * available under the terms of the Apache Software License 2.0
+ * which is available at https://www.apache.org/licenses/LICENSE-2.0.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ * ********************************************************************************
  */
+
 package temurin.sbom;
 
-import org.cyclonedx.BomGeneratorFactory;
-import org.cyclonedx.CycloneDxSchema;
+import org.cyclonedx.exception.GeneratorException;
 import org.cyclonedx.generators.json.BomJsonGenerator;
 import org.cyclonedx.model.Bom;
 import org.cyclonedx.parsers.JsonParser;
+import org.cyclonedx.Version;
 
 import org.webpki.json.JSONAsymKeySigner;
 import org.webpki.json.JSONObjectReader;
@@ -30,6 +31,9 @@ import org.webpki.json.JSONOutputFormats;
 import org.webpki.json.JSONParser;
 import org.webpki.util.PEMDecoder;
 
+import java.util.stream.Collectors;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.io.StringReader;
 import java.io.IOException;
 import java.io.FileReader;
@@ -59,17 +63,23 @@ public final class TemurinSignSBOM {
      * @param args Arguments for sbom operation.
      */
     public static void main(final String[] args) {
-        String cmd = null;
+        String cmd = "";
         String privateKeyFile = null;
         String publicKeyFile = null;
         String fileName = null;
         boolean success = false; // add a new boolean success, default to false
+        boolean privateStdIn = false; // TRUE if private key contents are passed in STDIN with --privateKeyFileSTDIN
 
         for (int i = 0; i < args.length; i++) {
             if (args[i].equals("--jsonFile")) {
                 fileName = args[++i];
             } else if (args[i].equals("--privateKeyFile")) {
                 privateKeyFile = args[++i];
+            } else if (args[i].equals("--privateKeyFileSTDIN")) {
+                BufferedReader reader = new BufferedReader(new InputStreamReader(System.in));
+                String privateKeyInput = reader.lines().collect(Collectors.joining("\n"));
+                privateKeyFile = privateKeyInput;
+                privateStdIn = true;
             } else if (args[i].equals("--publicKeyFile")) {
                 publicKeyFile = args[++i];
             } else if (args[i].equals("--signSBOM")) {
@@ -82,7 +92,7 @@ public final class TemurinSignSBOM {
         }
 
         if (cmd.equals("signSBOM")) {
-            Bom bom = signSBOM(fileName, privateKeyFile);
+            Bom bom = signSBOM(fileName, privateKeyFile, privateStdIn);
             if (bom != null) {
                 if (!writeJSONfile(bom, fileName)) {
                     success = false;
@@ -94,6 +104,8 @@ public final class TemurinSignSBOM {
         } else if (cmd.equals("verifySignature")) {
             success = verifySignature(fileName, publicKeyFile); // set success to the result of verifySignature
             System.out.println("Signature verification result: " + (success ? "Valid" : "Invalid"));
+        } else {
+            System.out.println("Please enter a command.");
         }
 
         // Set success to true only when the operation is completed successfully.
@@ -105,17 +117,30 @@ public final class TemurinSignSBOM {
         }
     }
 
-    static Bom signSBOM(final String jsonFile, final String pemFile) {
+    static Bom signSBOM(final String jsonFile, final String pemFile, final boolean privateStdIn) {
         try {
             // Read the JSON file to be signed
             Bom bom = readJSONfile(jsonFile);
             if (bom == null) {
                 return null;
             }
-            String sbomDataToSign = generateBomJson(bom);
+            String sbomDataToSign;
+            try {
+                sbomDataToSign = generateBomJson(bom);
+            } catch (GeneratorException e) {
+                LOGGER.log(Level.SEVERE, "Exception generating BOM", e);
+                return null;
+            }
 
             // Read the private key
-            KeyPair signingKey = PEMDecoder.getKeyPair(Files.readAllBytes(Paths.get(pemFile)));
+            KeyPair signingKey = null;
+            if (privateStdIn) {
+                // If private key is passed in STDIN
+                signingKey = PEMDecoder.getKeyPair(pemFile.getBytes());
+            } else {
+                // If private key is a file
+                signingKey = PEMDecoder.getKeyPair(Files.readAllBytes(Paths.get(pemFile)));
+            }
 
             // Sign the JSON data
             String signedData = new JSONObjectWriter(JSONParser.parse(sbomDataToSign))
@@ -131,15 +156,22 @@ public final class TemurinSignSBOM {
         }
     }
 
-    static String generateBomJson(final Bom bom) {
-        BomJsonGenerator bomGen = BomGeneratorFactory.createJson(CycloneDxSchema.Version.VERSION_14, bom);
+    static String generateBomJson(final Bom bom) throws GeneratorException {
+        BomJsonGenerator bomGen = new BomJsonGenerator(bom, Version.VERSION_16);
         String json = bomGen.toJsonString();
         return json;
     }
 
     static boolean writeJSONfile(final Bom bom, final String fileName) {
         // Creates testJson.json file
-        String json = generateBomJson(bom);
+        String json;
+        try {
+            json = generateBomJson(bom);
+        } catch (GeneratorException e) {
+            LOGGER.log(Level.SEVERE, "Exception generating BOM", e);
+            return false;
+        }
+
         try (FileWriter file = new FileWriter(fileName)) {
             file.write(json);
             return true;
@@ -163,7 +195,13 @@ public final class TemurinSignSBOM {
         try {
             // Read the JSON file to be verified
             Bom bom = readJSONfile(jsonFile);
-            String signedSbomData = generateBomJson(bom);
+            String signedSbomData;
+            try {
+                signedSbomData = generateBomJson(bom);
+            } catch (GeneratorException e) {
+                LOGGER.log(Level.SEVERE, "Exception generating BOM", e);
+                return false;
+            }
 
             // Parse JSON
             JSONObjectReader reader = JSONParser.parse(signedSbomData);

@@ -1,3 +1,16 @@
+# ********************************************************************************
+# Copyright (c) 2021 Contributors to the Eclipse Foundation
+#
+# See the NOTICE file(s) with this work for additional
+# information regarding copyright ownership.
+#
+# This program and the accompanying materials are made
+# available under the terms of the Apache Software License 2.0
+# which is available at https://www.apache.org/licenses/LICENSE-2.0.
+#
+# SPDX-License-Identifier: Apache-2.0
+# ********************************************************************************
+
 name: CA Certs Update
 on:
   workflow_dispatch:
@@ -6,14 +19,15 @@ on:
     - cron: "0 0 * * *"
 
 permissions:
-  contents: read
+  contents: write  # to push local changes (gr2m/create-or-update-pull-request-action)
+  pull-requests: write  # to create a PR (gr2m/create-or-update-pull-request-action)
 
 jobs:
   update_ca_certs:
     if: startsWith(github.repository, 'adoptium/')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3.6.0
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
         with:
           persist-credentials: false
 
@@ -21,12 +35,12 @@ jobs:
         working-directory: ./security
         run: "./mk-ca-bundle.pl"
 
-      - uses: gr2m/create-or-update-pull-request-action@dc1726cbf4dd3ce766af4ec29cfb660e0125e8ee # v1
+      - uses: gr2m/create-or-update-pull-request-action@b65137ca591da0b9f43bad7b24df13050ea45d1b # v1.10.1
         env:
           GITHUB_TOKEN: ${{ secrets.ADOPTIUM_TEMURIN_BOT_TOKEN }}
         with:
+          branch: ca-certs-updater
           title: "Update CA Certs"
           body: "See details in the Meta Bug linked from the *Root Cert Inclusions into Mozilla Product Releases* section of https://wiki.mozilla.org/NSS:Release_Versions"
-          path: "security/"
           commit-message: "cacerts: pull in updated certs from Mozilla"
           author: "eclipse-temurin-bot <temurin-bot@eclipse.org>"

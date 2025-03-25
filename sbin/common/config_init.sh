@@ -1,21 +1,18 @@
 #!/bin/bash
-# shellcheck disable=SC2153,SC2155
+# ********************************************************************************
+# Copyright (c) 2018 Contributors to the Eclipse Foundation
+#
+# See the NOTICE file(s) with this work for additional
+# information regarding copyright ownership.
+#
+# This program and the accompanying materials are made
+# available under the terms of the Apache Software License 2.0
+# which is available at https://www.apache.org/licenses/LICENSE-2.0.
+#
+# SPDX-License-Identifier: Apache-2.0
+# ********************************************************************************
 
-################################################################################
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      https://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
-################################################################################
+# shellcheck disable=SC2153,SC2155
 
 ################################################################################
 #
@@ -32,7 +29,9 @@
 # (because of GPL3), we therefore have to name the indexes of the CONFIG_PARAMS
 # map. This is why we can't have nice things.
 CONFIG_PARAMS=(
+ADOPTIUM_DEVKIT_LOCATION
 ADOPT_PATCHES
+ALSA
 ASSEMBLE_EXPLODED_IMAGE
 OPENJDK_BUILD_REPO_BRANCH
 OPENJDK_BUILD_REPO_URI
@@ -42,10 +41,13 @@ BUILD_REPRODUCIBLE_DATE
 BUILD_TIMESTAMP
 BUILD_VARIANT
 CERTIFICATE
+CONTAINER_AS_ROOT
 CLEAN_DOCKER_BUILD
 CLEAN_GIT_REPO
 CLEAN_LIBS
+CONTAINER_COMMAND
 CONTAINER_NAME
+CONTAINER_IMAGE
 COPY_MACOSX_FREE_FONT_LIB_FOR_JDK_FLAG
 COPY_MACOSX_FREE_FONT_LIB_FOR_JRE_FLAG
 COPY_TO_HOST
@@ -58,9 +60,9 @@ CROSSCOMPILE
 DEBUG_DOCKER
 DEBUG_IMAGE_PATH
 DISABLE_ADOPT_BRANCH_SAFETY
-DOCKER
 DOCKER_FILE_PATH
 DOCKER_SOURCE_VOLUME_NAME
+ENABLE_SBOM_STRACE
 FREETYPE
 FREETYPE_DIRECTORY
 FREETYPE_FONT_BUILD_TYPE_PARAM
@@ -73,6 +75,7 @@ JRE_PATH
 TEST_IMAGE_PATH
 STATIC_LIBS_IMAGE_PATH
 JVM_VARIANT
+LOCAL_DEPENDENCY_CACHE_DIR
 MACOSX_CODESIGN_IDENTITY
 MAKE_ARGS_FOR_ANY_PLATFORM
 MAKE_EXPLODED
@@ -82,6 +85,8 @@ OPENJDK_BUILD_NUMBER
 OPENJDK_CORE_VERSION
 OPENJDK_FEATURE_NUMBER
 OPENJDK_FOREST_NAME
+OPENJDK_LOCAL_SOURCE_ARCHIVE
+OPENJDK_LOCAL_SOURCE_ARCHIVE_ABSPATH
 OPENJDK_SOURCE_DIR
 OPENJDK_UPDATE_VERSION
 OS_KERNEL_NAME
@@ -98,11 +103,12 @@ TARGET_DIR
 TARGET_FILE_NAME
 TMP_CONTAINER_NAME
 TMP_SPACE_BUILD
-USE_DOCKER
+USE_ADOPTIUM_DEVKIT
 USE_JEP319_CERTS
 USE_SSH
 USER_SUPPLIED_CONFIGURE_ARGS
 USER_SUPPLIED_MAKE_ARGS
+USER_OPENJDK_BUILD_ROOT_DIRECTORY
 VENDOR
 VENDOR_URL
 VENDOR_BUG_URL
@@ -120,6 +126,7 @@ WORKSPACE_DIR
 #  <WORKSPACE_DIR>/config                              Configuration                        /openjdk/config             $(pwd)/workspace/config
 #  <WORKSPACE_DIR>/<WORKING_DIR>                       Build area                           /openjdk/build              $(pwd)/workspace/build/
 #  <WORKSPACE_DIR>/<WORKING_DIR>/<OPENJDK_SOURCE_DIR>  Source code                          /openjdk/build/src          $(pwd)/workspace/build/src
+#  <WORKSPACE_DIR>/<WORKING_DIR>/devkit                DevKit download                      /openjdk/build/devkit       $(pwd)/workspace/build/devkit
 #  <WORKSPACE_DIR>/target                              Destination of built artifacts       /openjdk/target             $(pwd)/workspace/target
 
 # Helper code to perform index lookups by name
@@ -268,14 +275,29 @@ function parseConfigurationArguments() {
         "--destination" | "-d" )
         BUILD_CONFIG[TARGET_DIR]="$1"; shift;;
 
-        "--docker" | "-D" )
-        BUILD_CONFIG[USE_DOCKER]="true";;
+        "-D" )
+        if which podman > /dev/null ; then BUILD_CONFIG[CONTAINER_COMMAND]="podman" ; else BUILD_CONFIG[CONTAINER_COMMAND]="docker" ; fi;
+        if setCustomImage "${1-}"; then shift ; fi
+        ;;
+
+        "--docker" )
+        BUILD_CONFIG[CONTAINER_COMMAND]="docker";
+        if setCustomImage "${1-}"; then shift ; fi
+        ;;
+
+        "--podman" )
+        BUILD_CONFIG[CONTAINER_COMMAND]="podman";
+        if setCustomImage "${1-}"; then shift ; fi
+        ;;
 
         "--debug-docker" )
         BUILD_CONFIG[DEBUG_DOCKER]="true";;
 
         "--disable-shallow-git-clone" )
         BUILD_CONFIG[SHALLOW_CLONE_OPTION]="";;
+
+        "--enable-sbom-strace" )
+        BUILD_CONFIG[ENABLE_SBOM_STRACE]=true;;
 
         "--freetype-dir" | "-f" )
         BUILD_CONFIG[FREETYPE_DIRECTORY]="$1"; shift;;
@@ -292,6 +314,9 @@ function parseConfigurationArguments() {
         "--skip-freetype" | "-F" )
         BUILD_CONFIG[FREETYPE]=false;;
 
+        "--skip-alsa" | "-A" )
+        BUILD_CONFIG[ALSA]=false;;
+
         "--help" | "-h" )
         man ./makejdk-any-platform.1 && exit 0;;
 
@@ -299,7 +324,7 @@ function parseConfigurationArguments() {
         BUILD_CONFIG[REUSE_CONTAINER]=false;;
 
         "--jdk-boot-dir" | "-J" )
-        BUILD_CONFIG[JDK_BOOT_DIR]="$1";shift;;
+        BUILD_CONFIG[JDK_BOOT_DIR]="$1"; shift;;
 
         "--cross-compile" )
         BUILD_CONFIG[CROSSCOMPILE]=true;;
@@ -309,6 +334,9 @@ function parseConfigurationArguments() {
 
         "--no-adopt-patches" )
         BUILD_CONFIG[ADOPT_PATCHES]=false;;
+
+        "--openjdk-source-location" | "-l" )
+        setOpenjdkSourceDir "${1}"; shift;;
 
         "--patches" )
         BUILD_CONFIG[PATCHES]="$1"; shift;;
@@ -320,7 +348,7 @@ function parseConfigurationArguments() {
         BUILD_CONFIG[REPOSITORY]="$1"; shift;;
 
         "--release" )
-        BUILD_CONFIG[RELEASE]=true; shift;;
+        BUILD_CONFIG[RELEASE]=true;;
 
         "--source" | "-s" )
         BUILD_CONFIG[WORKING_DIR]="$1"; shift;;
@@ -334,7 +362,7 @@ function parseConfigurationArguments() {
         BUILD_CONFIG[SIGN]=true; BUILD_CONFIG[CERTIFICATE]="$1"; shift;;
 
         "--sudo" )
-        BUILD_CONFIG[DOCKER]="sudo docker";;
+        BUILD_CONFIG[CONTAINER_AS_ROOT]="sudo";;
 
         "--tag" | "-t" )
         BUILD_CONFIG[TAG]="$1"; BUILD_CONFIG[SHALLOW_CLONE_OPTION]=""; shift;;
@@ -350,6 +378,15 @@ function parseConfigurationArguments() {
 
         "--use-jep319-certs" )
         BUILD_CONFIG[USE_JEP319_CERTS]=true;;
+
+        "--use-adoptium-devkit")
+        BUILD_CONFIG[USE_ADOPTIUM_DEVKIT]="$1"; shift;;
+
+        "--local-dependency-cache-dir")
+        BUILD_CONFIG[LOCAL_DEPENDENCY_CACHE_DIR]="$1"; shift;;
+
+        "--user-openjdk-build-root-directory" )
+        BUILD_CONFIG[USER_OPENJDK_BUILD_ROOT_DIRECTORY]="$1"; shift;;
 
         "--vendor" | "-ve" )
         BUILD_CONFIG[VENDOR]="$1"; shift;;
@@ -370,36 +407,53 @@ function parseConfigurationArguments() {
         "--jvm-variant"  | "-V" )
         BUILD_CONFIG[JVM_VARIANT]="$1"; shift;;
 
+        "--wsl" )
+         BUILD_CONFIG[USER_SUPPLIED_CONFIGURE_ARGS]+="--build=x86_64-unknown-linux-gnu --openjdk-target=x86_64-unknown-linux-gnu ";;
+
         *) echo >&2 "Invalid build.sh option: ${opt}"; exit 1;;
       esac
     done
-
-    setBranch
 }
 
-function setBranch() {
-
-  # Which repo branch to build, e.g. dev by default for temurin, "openj9" for openj9
-  local branch="master"
-  if [ "${BUILD_CONFIG[BUILD_VARIANT]}" == "${BUILD_VARIANT_TEMURIN}" ]; then
-    branch="dev"
-  elif [ "${BUILD_CONFIG[BUILD_VARIANT]}" == "${BUILD_VARIANT_OPENJ9}" ]; then
-    branch="openj9";
-  elif [ "${BUILD_CONFIG[BUILD_VARIANT]}" == "${BUILD_VARIANT_DRAGONWELL}" ]; then
-    branch="master";
-  elif [ "${BUILD_CONFIG[BUILD_VARIANT]}" == "${BUILD_VARIANT_FAST_STARTUP}" ]; then
-    branch="master";
-  elif [ "${BUILD_CONFIG[BUILD_VARIANT]}" == "${BUILD_VARIANT_CORRETTO}" ]; then
-    branch="develop";
-  elif [ "${BUILD_CONFIG[BUILD_VARIANT]}" == "${BUILD_VARIANT_BISHENG}" ]; then
-    if [ "${BUILD_CONFIG[OS_ARCHITECTURE]}" == "riscv64" ] ; then
-      branch="risc-v"
-    else
-      branch="master"
-    fi
+# Set the local dir if used
+function setOpenjdkSourceDir() {
+  if [ ! -e "${1}" ] ; then
+    echo "You have specified -l/--openjdk-source-location, but '${1}' does not exist"
+    exit 1
   fi
+  BUILD_CONFIG[OPENJDK_LOCAL_SOURCE_ARCHIVE_ABSPATH]=$(readlink -f "$1");
+  if [ ! -e "${BUILD_CONFIG[OPENJDK_LOCAL_SOURCE_ARCHIVE_ABSPATH]}" ] ; then
+    echo "You have specified -l/--openjdk-source-location, but '${BUILD_CONFIG[OPENJDK_LOCAL_SOURCE_ARCHIVE_ABSPATH]}' does not exist"
+    exit 1
+  fi
+  BUILD_CONFIG[OPENJDK_LOCAL_SOURCE_ARCHIVE]="true";
+  if [ -z "${BUILD_CONFIG[TAG]}" ] ; then
+    echo "WARNING: You have not yet specified --tag. It is strongly recommended you do so, otherwise a default one will be provided."
+  fi
+}
 
-  BUILD_CONFIG[BRANCH]=${BUILD_CONFIG[BRANCH]:-$branch}
+# Set custom image base if set
+function setCustomImage() {
+  local imageCandidate="${1}"
+  # is next param empty?
+  if [[ -z ${imageCandidate} ]] ; then
+    echo "default image will be used: ${BUILD_CONFIG[CONTAINER_IMAGE]}"
+    return 1
+  fi
+  # is the next parameter a switch?
+  if [[ ${imageCandidate} == -* ]] ; then
+    echo "default image will be used: ${BUILD_CONFIG[CONTAINER_IMAGE]}"
+    return 1
+  fi
+  # is the next param a main arg?
+  if checkOpenJdkVersion "${imageCandidate}" ; then
+   echo "default image will be used: ${BUILD_CONFIG[CONTAINER_IMAGE]}"
+   return 1
+  fi
+  # not empty, not switch, not main arg - therefore it must be an image, use it
+  BUILD_CONFIG[CONTAINER_IMAGE]="${imageCandidate}"
+  echo "base image will be set to: ${BUILD_CONFIG[CONTAINER_IMAGE]}"
+  return 0
 }
 
 # Set the config defaults
@@ -449,6 +503,12 @@ function configDefaults() {
   # The full forest name, e.g. jdk8, jdk8u, jdk9, jdk9u, etc.
   BUILD_CONFIG[OPENJDK_FOREST_NAME]=""
 
+  # whether the forest is local directory or not
+  BUILD_CONFIG[OPENJDK_LOCAL_SOURCE_ARCHIVE]="false"
+
+  # whether the forest is local directory or not
+  BUILD_CONFIG[OPENJDK_LOCAL_SOURCE_ARCHIVE_ABSPATH]=""
+
   # The abridged openjdk core version name, e.g. jdk8, jdk9, etc.
   BUILD_CONFIG[OPENJDK_CORE_VERSION]=""
 
@@ -466,7 +526,8 @@ function configDefaults() {
 
   BUILD_CONFIG[COPY_MACOSX_FREE_FONT_LIB_FOR_JDK_FLAG]="false"
   BUILD_CONFIG[COPY_MACOSX_FREE_FONT_LIB_FOR_JRE_FLAG]="false"
-  BUILD_CONFIG[FREETYPE]=true
+  BUILD_CONFIG[ALSA]="true"
+  BUILD_CONFIG[FREETYPE]="true"
   BUILD_CONFIG[FREETYPE_DIRECTORY]=""
   BUILD_CONFIG[FREETYPE_FONT_VERSION]="86bc8a95056c97a810986434a3f268cbe67f2902" # 2.9.1
   BUILD_CONFIG[FREETYPE_FONT_BUILD_TYPE_PARAM]=""
@@ -486,6 +547,9 @@ function configDefaults() {
   # Default to no supplied reproducible build date, uses current date
   BUILD_CONFIG[BUILD_REPRODUCIBLE_DATE]=""
 
+  # Default to no user supplied openjdk build root directory
+  BUILD_CONFIG[USER_OPENJDK_BUILD_ROOT_DIRECTORY]=""
+
   # The default behavior of whether we want to create a separate debug symbols archive
   BUILD_CONFIG[CREATE_DEBUG_IMAGE]="false"
 
@@ -494,6 +558,8 @@ function configDefaults() {
 
   # Set default value to "false". We config buildArg per each config file to have it enabled by our pipeline
   BUILD_CONFIG[CREATE_SBOM]="false"
+
+  BUILD_CONFIG[ENABLE_SBOM_STRACE]="false"
 
   # The default behavior of whether we want to create a separate source archive
   BUILD_CONFIG[CREATE_SOURCE_ARCHIVE]="false"
@@ -516,12 +582,13 @@ function configDefaults() {
   BUILD_CONFIG[DOCKER_SOURCE_VOLUME_NAME]=${BUILD_CONFIG[DOCKER_SOURCE_VOLUME_NAME]:-"openjdk-source-volume"}
 
   BUILD_CONFIG[CONTAINER_NAME]=${BUILD_CONFIG[CONTAINER_NAME]:-openjdk_container}
+  BUILD_CONFIG[CONTAINER_IMAGE]=${BUILD_CONFIG[CONTAINER_IMAGE]:-"ubuntu:18.04"}
 
   BUILD_CONFIG[TMP_CONTAINER_NAME]=${BUILD_CONFIG[TMP_CONTAINER_NAME]:-openjdk-copy-src}
   BUILD_CONFIG[CLEAN_DOCKER_BUILD]=${BUILD_CONFIG[CLEAN_DOCKER_BUILD]:-false}
 
   # Use Docker to build (defaults to false)
-  BUILD_CONFIG[USE_DOCKER]=${BUILD_CONFIG[USE_DOCKER]:-false}
+  BUILD_CONFIG[CONTAINER_COMMAND]=${BUILD_CONFIG[CONTAINER_COMMAND]:-false}
 
   # Alow to debug docker build.sh script (dafult to false)
   BUILD_CONFIG[DEBUG_DOCKER]=${BUILD_CONFIG[DEBUG_DOCKER]:-false}
@@ -578,7 +645,7 @@ function configDefaults() {
   # Whether to use Temurin's cacerts file (true) or use the file provided by OpenJDK (false)
   BUILD_CONFIG[CUSTOM_CACERTS]=${BUILD_CONFIG[CUSTOM_CACERTS]:-"true"}
 
-  BUILD_CONFIG[DOCKER]=${BUILD_CONFIG[DOCKER]:-"docker"}
+  BUILD_CONFIG[CONTAINER_AS_ROOT]=${BUILD_CONFIG[CONTAINER_AS_ROOT]:-""}
 
   BUILD_CONFIG[TMP_SPACE_BUILD]=${BUILD_CONFIG[TMP_SPACE_BUILD]:-false}
 
@@ -586,6 +653,13 @@ function configDefaults() {
   BUILD_CONFIG[CLEAN_GIT_REPO]=false
 
   BUILD_CONFIG[CLEAN_LIBS]=false
+
+  # Default to no Adoptium DevKit
+  BUILD_CONFIG[USE_ADOPTIUM_DEVKIT]=""
+  BUILD_CONFIG[ADOPTIUM_DEVKIT_LOCATION]=""
+
+  # Default to no local dependency cache
+  BUILD_CONFIG[LOCAL_DEPENDENCY_CACHE_DIR]=""
 
   # By default dont backport JEP318 certs to < Java 10
   BUILD_CONFIG[USE_JEP319_CERTS]=false

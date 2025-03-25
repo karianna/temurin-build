@@ -1,21 +1,17 @@
 #!/bin/bash
 # shellcheck disable=SC1091
-
-################################################################################
+# ********************************************************************************
+# Copyright (c) 2017 Contributors to the Eclipse Foundation
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# See the NOTICE file(s) with this work for additional
+# information regarding copyright ownership.
 #
-#      https://www.apache.org/licenses/LICENSE-2.0
+# This program and the accompanying materials are made
+# available under the terms of the Apache Software License 2.0
+# which is available at https://www.apache.org/licenses/LICENSE-2.0.
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
-################################################################################
+# SPDX-License-Identifier: Apache-2.0
+# ********************************************************************************
 
 ################################################################################
 #
@@ -55,10 +51,20 @@ configure_build "$@"
 writeConfigToFile
 
 # Store params to this script as "buildinfo"
-echo "$@" > ./workspace/config/makejdk-any-platform.args
+# Ensure arguments containing "spaces" are quoted
+makeJdkArgs=""
+for arg in "$@"; do
+  # Quote the argument if it contains spaces
+  if [[ "${arg}" =~ .*" ".* ]]; then
+    makeJdkArgs="${makeJdkArgs} \"${arg}\""
+  else
+    makeJdkArgs="${makeJdkArgs} ${arg}"
+  fi
+done
+echo "${makeJdkArgs}" > ./workspace/config/makejdk-any-platform.args
 
 # Let's build and test the (Adoptium) OpenJDK binary in Docker or natively
-if [ "${BUILD_CONFIG[USE_DOCKER]}" == "true" ] ; then
+if [ ! "${BUILD_CONFIG[CONTAINER_COMMAND]}" == "false" ] ; then
   buildOpenJDKViaDocker
 else
   buildOpenJDKInNativeEnvironment

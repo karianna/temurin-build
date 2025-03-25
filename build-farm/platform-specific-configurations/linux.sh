@@ -1,23 +1,22 @@
 #!/bin/bash
 # shellcheck disable=SC1091
-
-################################################################################
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# ********************************************************************************
+# Copyright (c) 2018 Contributors to the Eclipse Foundation
 #
-#      https://www.apache.org/licenses/LICENSE-2.0
+# See the NOTICE file(s) with this work for additional
+# information regarding copyright ownership.
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-################################################################################
+# This program and the accompanying materials are made
+# available under the terms of the Apache Software License 2.0
+# which is available at https://www.apache.org/licenses/LICENSE-2.0.
+#
+# SPDX-License-Identifier: Apache-2.0
+# ********************************************************************************
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 # shellcheck source=sbin/common/constants.sh
 source "$SCRIPT_DIR/../../sbin/common/constants.sh"
+source "$SCRIPT_DIR/../../sbin/common/downloaders.sh"
 
 if [[ "$JAVA_FEATURE_VERSION" -ge 21 ]]; then
   # jdk-21+ uses "bundled" FreeType
@@ -26,6 +25,19 @@ else
   # Bundling our own freetype can cause problems, so we skip that on linux.
   export BUILD_ARGS="${BUILD_ARGS} --skip-freetype"
 fi
+
+## This affects Alpine docker images and also evaluation pipelines
+if [ "$(pwd | wc -c)" -gt 83 ]; then
+  # Use /tmp for alpine in preference to $HOME as Alpine fails gpg operation if PWD > 83 characters
+  # Alpine also cannot create ~/.gpg-temp within a docker context
+  GNUPGHOME="$(mktemp -d /tmp/.gpg-temp.XXXXXX)"
+else
+  GNUPGHOME="${WORKSPACE:-$PWD}/.gpg-temp"
+fi
+if [ ! -d "$GNUPGHOME" ]; then
+    mkdir -m 700 "$GNUPGHOME"
+fi
+export GNUPGHOME
 
 NATIVE_API_ARCH=$(uname -m)
 if [ "${NATIVE_API_ARCH}" = "x86_64" ]; then NATIVE_API_ARCH=x64; fi
@@ -39,16 +51,46 @@ function locateDragonwell8BootJDK()
     export "${BOOT_JDK_VARIABLE}"=/usr/lib/jvm/dragonwell8
   else
     echo Dragonwell 8 requires a Dragonwell boot JDK - downloading one ...
-    mkdir -p "$PWD/jdk-8"
+    mkdir -p "$PWD/jdk8"
+    # if [ "$(uname -m)" = "x86_64" ]; then
+    #   curl -L "https://github.com/alibaba/dragonwell8/releases/download/dragonwell-8.11.12_jdk8u332-ga/Alibaba_Dragonwell_8.11.12_x64_linux.tar.gz" | tar xpzf - --strip-components=1 -C "$PWD/jdk8"
+    # elif [ "$(uname -m)" = "aarch64" ]; then
+    #   curl -L "https://github.com/alibaba/dragonwell8/releases/download/dragonwell-8.8.9_jdk8u302-ga/Alibaba_Dragonwell_8.8.9_aarch64_linux.tar.gz" | tar xpzf - --strip-components=1 -C "$PWD/jdk8"
+    # else
+    #   echo "Unknown architecture $(uname -m) for building Dragonwell - cannot download boot JDK"
+    #   exit 1
+    # fi
+    ## Secure Dragonwell Downloads By Validating Checksums
     if [ "$(uname -m)" = "x86_64" ]; then
-      curl -L "https://github.com/alibaba/dragonwell8/releases/download/dragonwell-8.11.12_jdk8u332-ga/Alibaba_Dragonwell_8.11.12_x64_linux.tar.gz" | tar xpzf - --strip-components=1 -C "$PWD/jdk-8"
+      DOWNLOAD_URL="https://github.com/alibaba/dragonwell8/releases/download/dragonwell-8.11.12_jdk8u332-ga/Alibaba_Dragonwell_8.11.12_x64_linux.tar.gz"
+      EXPECTED_SHA256="E03923f200dffddf9eee2aadc0c495674fe0b87cc2eece94a9a8dec84812d12bd"
     elif [ "$(uname -m)" = "aarch64" ]; then
-      curl -L "https://github.com/alibaba/dragonwell8/releases/download/dragonwell-8.8.9_jdk8u302-ga/Alibaba_Dragonwell_8.8.9_aarch64_linux.tar.gz" | tar xpzf - --strip-components=1 -C "$PWD/jdk-8"
+      DOWNLOAD_URL="https://github.com/alibaba/dragonwell8/releases/download/dragonwell-8.8.9_jdk8u302-ga/Alibaba_Dragonwell_8.8.9_aarch64_linux.tar.gz"
+      EXPECTED_SHA256="ff0594f36d13883972ca0b302d35cca5099f10b8be54c70c091f626e4e308774"
     else
       echo "Unknown architecture $(uname -m) for building Dragonwell - cannot download boot JDK"
       exit 1
     fi
-    export "${BOOT_JDK_VARIABLE}"="$PWD/jdk-8"
+    # Download the file and calculate its SHA256 checksum
+    TMP_FILE=$(mktemp)
+    curl -L "$DOWNLOAD_URL" -o "$TMP_FILE"
+
+    # Calculate the SHA256 checksum of the downloaded file
+    ACTUAL_SHA256=$(sha256sum "$TMP_FILE" | awk '{print $1}')
+
+    # Compare the actual and expected SHA256 checksums
+    if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
+      echo "Checksum verification failed for downloaded file!"
+      rm "$TMP_FILE"
+      exit 1
+    fi
+
+    # Extract the downloaded file
+    tar xpzf "$TMP_FILE" --strip-components=1 -C "$PWD/jdk8"
+
+    # Clean up the temporary file
+    rm "$TMP_FILE"
+    export "${BOOT_JDK_VARIABLE}"="$PWD/jdk8"
   fi
 }
 
@@ -132,71 +174,6 @@ function setCrossCompilerEnvironment()
   fi
 }
 
-function downloadBootJDK()
-{
-  ARCH=$1
-  VER=$2
-  export GNUPGHOME=$PWD/.gnupg-temp
-  if [ ! -d "$GNUPGHOME" ]; then
-    mkdir -m 700 "$GNUPGHOME"
-  fi
-  export downloadArch
-  case "$ARCH" in
-     "riscv64") downloadArch="$NATIVE_API_ARCH";;
-             *) downloadArch="$ARCH";;
-  esac
-  releaseType="ga"
-  vendor="eclipse"
-  apiUrlTemplate="https://api.adoptium.net/v3/binary/latest/\${VER}/\${releaseType}/linux/\${downloadArch}/jdk/hotspot/normal/\${vendor}"
-  apiURL=$(eval echo "${apiUrlTemplate}")
-  echo "Downloading GA release of boot JDK version ${VER} from ${apiURL}"
-  # make-adopt-build-farm.sh has 'set -e'. We need to disable that for
-  # the fallback mechanism, as downloading of the GA binary might fail.
-  set +e
-  curl -L -o bootjdk.tar.gz "${apiURL}"
-  apiSigURL=$(curl -v "${apiURL}" 2>&1 | tr -d \\r | awk '/^< Location:/{print $3 ".sig"}')
-  if ! grep "No releases match the request" bootjdk.tar.gz; then
-    curl -L -o bootjdk.tar.gz.sig "${apiSigURL}"
-    gpg --keyserver keyserver.ubuntu.com --recv-keys 3B04D753C9050D9A5D343F39843C48A565F8F04B
-    echo -e "5\ny\n" |  gpg --batch --command-fd 0 --expert --edit-key 3B04D753C9050D9A5D343F39843C48A565F8F04B trust;
-    gpg --verify bootjdk.tar.gz.sig bootjdk.tar.gz || exit 1
-    mkdir "$bootDir"
-    tar xpzf bootjdk.tar.gz --strip-components=1 -C "$bootDir"
-    set -e
-  else
-    # We must be a JDK HEAD build for which no boot JDK exists other than
-    # nightlies?
-    echo "Downloading GA release of boot JDK version ${VER} failed."
-    # shellcheck disable=SC2034
-    releaseType="ea"
-    # shellcheck disable=SC2034
-    vendor="adoptium"
-    apiURL=$(eval echo ${apiUrlTemplate})
-    echo "Attempting to download EA release of boot JDK version ${VER} from ${apiURL}"
-    set +e
-    curl -L -o bootjdk.tar.gz "${apiURL}"
-    if ! grep "No releases match the request" bootjdk.tar.gz; then
-      apiSigURL=$(curl -v "${apiURL}" 2>&1 | tr -d \\r | awk '/^< Location:/{print $3 ".sig"}')
-      curl -L -o bootjdk.tar.gz.sig "${apiSigURL}"
-      gpg --keyserver keyserver.ubuntu.com --recv-keys 3B04D753C9050D9A5D343F39843C48A565F8F04B
-      echo -e "5\ny\n" |  gpg --batch --command-fd 0 --expert --edit-key 3B04D753C9050D9A5D343F39843C48A565F8F04B trust;
-      gpg --verify bootjdk.tar.gz.sig bootjdk.tar.gz || exit 1
-      mkdir "$bootDir"
-      tar xpzf bootjdk.tar.gz --strip-components=1 -C "$bootDir"
-    else
-      # If no binaries are available then try from adoptopenjdk
-      echo "Downloading Temurin release of boot JDK version ${VER} failed."
-      # shellcheck disable=SC2034
-      releaseType="ga"
-      # shellcheck disable=SC2034
-      vendor="adoptium"
-      apiURL=$(eval echo ${apiUrlTemplate})
-      echo "Attempting to download GA release of boot JDK version ${VER} from ${apiURL}"
-      curl -L "${apiURL}" | tar xpzf - --strip-components=1 -C "$bootDir"
-    fi
-  fi
-}
-
 if [ "${ARCHITECTURE}" == "x64" ]
 then
   export PATH=/opt/rh/devtoolset-2/root/usr/bin:$PATH
@@ -237,8 +214,7 @@ then
 
   if [ "${ARCHITECTURE}" == "ppc64le" ] || [ "${ARCHITECTURE}" == "x64" ]
   then
-    CUDA_VERSION=9.0
-    CUDA_HOME=/usr/local/cuda-$CUDA_VERSION
+    CUDA_HOME=/usr/local/cuda
     if [ -f $CUDA_HOME/include/cuda.h ]
     then
       export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --enable-cuda --with-cuda=$CUDA_HOME"
@@ -297,18 +273,18 @@ if [ "${VARIANT}" == "${BUILD_VARIANT_DRAGONWELL}" ] && [ "$JAVA_FEATURE_VERSION
 fi
 
 if [ ! -d "$(eval echo "\$$BOOT_JDK_VARIABLE")" ]; then
-  bootDir="$PWD/jdk-$JDK_BOOT_VERSION"
+  bootDir="$PWD/jdk$JDK_BOOT_VERSION"
   # Note we export $BOOT_JDK_VARIABLE (i.e. JDKXX_BOOT_DIR) here
   # instead of BOOT_JDK_VARIABLE (no '$').
   export "${BOOT_JDK_VARIABLE}"="$bootDir"
   if [ ! -x "$bootDir/bin/javac" ]; then
     # Set to a default location as linked in the ansible playbooks
-    if [ -x "/usr/lib/jvm/jdk-${JDK_BOOT_VERSION}/bin/javac" ]; then
-      echo "Could not use ${BOOT_JDK_VARIABLE} - using /usr/lib/jvm/jdk-${JDK_BOOT_VERSION}"
+    if [ -x "/usr/lib/jvm/jdk${JDK_BOOT_VERSION}/bin/javac" ]; then
+      echo "Could not use ${BOOT_JDK_VARIABLE} - using /usr/lib/jvm/jdk${JDK_BOOT_VERSION}"
       # shellcheck disable=SC2140
-      export "${BOOT_JDK_VARIABLE}"="/usr/lib/jvm/jdk-${JDK_BOOT_VERSION}"
+      export "${BOOT_JDK_VARIABLE}"="/usr/lib/jvm/jdk${JDK_BOOT_VERSION}"
     elif [ "$JDK_BOOT_VERSION" -ge 8 ]; then # Adoptium has no build pre-8
-      downloadBootJDK "${ARCHITECTURE}" "${JDK_BOOT_VERSION}"
+      downloadLinuxBootJDK "${ARCHITECTURE}" "${JDK_BOOT_VERSION}" "$bootDir"
     fi
   fi
 fi
@@ -323,40 +299,46 @@ if [ $executedJavaVersion -ne 0 ]; then
     exit 1
 fi
 
-if [ "${VARIANT}" == "${BUILD_VARIANT_DRAGONWELL}" ] && [ "$JAVA_FEATURE_VERSION" -eq 11 ] && [ -r /usr/local/gcc9/ ] && [ "${ARCHITECTURE}" == "aarch64" ]; then
-  # GCC9 rather than 10 requested by Alibaba for now
-  # Ref https://github.com/adoptium/temurin-build/issues/2250#issuecomment-732958466
-  export PATH=/usr/local/gcc9/bin:$PATH
-  export CC=/usr/local/gcc9/bin/gcc-9.3
-  export CXX=/usr/local/gcc9/bin/g++-9.3
-  # Enable GCC 10 for Java 17+ for repeatable builds, but not for our supported releases
-  # Ref https://github.com/adoptium/temurin-build/issues/2787
-elif [ "${ARCHITECTURE}" == "riscv64" ] && [ -r /usr/bin/gcc-10 ]; then
-  # Enable GCC 10 for RISC-V, given the rapid evolution of RISC-V, the newer the GCC toolchain, the better
-  [ -r /usr/bin/gcc-10 ] && export  CC=/usr/bin/gcc-10
-  [ -r /usr/bin/g++-10 ] && export CXX=/usr/bin/g++-10
-elif [ "$JAVA_FEATURE_VERSION" -ge 19 ] && [ -r /usr/local/gcc11/bin/gcc-11.2 ]; then
-  export PATH=/usr/local/gcc11/bin:$PATH
-  [ -r /usr/local/gcc11/bin/gcc-11.2 ] && export  CC=/usr/local/gcc11/bin/gcc-11.2
-  [ -r /usr/local/gcc11/bin/g++-11.2 ] && export CXX=/usr/local/gcc11/bin/g++-11.2
-  export LD_LIBRARY_PATH=/usr/local/gcc11/lib64:/usr/local/gcc11/lib
-elif [ "$JAVA_FEATURE_VERSION" -ge 17 ] && [ -r /usr/local/gcc10/bin/gcc-10.3 ]; then
-  export PATH=/usr/local/gcc10/bin:$PATH
-  [ -r /usr/local/gcc10/bin/gcc-10.3 ] && export  CC=/usr/local/gcc10/bin/gcc-10.3
-  [ -r /usr/local/gcc10/bin/g++-10.3 ] && export CXX=/usr/local/gcc10/bin/g++-10.3
-  export LD_LIBRARY_PATH=/usr/local/gcc10/lib64:/usr/local/gcc10/lib
-elif [ "$JAVA_FEATURE_VERSION" -gt 17 ] && [ -r /usr/bin/gcc-10 ]; then
-  [ -r /usr/bin/gcc-10 ] && export  CC=/usr/bin/gcc-10
-  [ -r /usr/bin/g++-10 ] && export CXX=/usr/bin/g++-10
-# Continue to use GCC 7 if present for JDK<=17 and where 10 does not exist
-elif [ -r /usr/local/gcc/bin/gcc-7.5 ]; then
-  export PATH=/usr/local/gcc/bin:$PATH
-  [ -r /usr/local/gcc/bin/gcc-7.5 ] && export  CC=/usr/local/gcc/bin/gcc-7.5
-  [ -r /usr/local/gcc/bin/g++-7.5 ] && export CXX=/usr/local/gcc/bin/g++-7.5
-  export LD_LIBRARY_PATH=/usr/local/gcc/lib64:/usr/local/gcc/lib
-elif [ -r /usr/bin/gcc-7 ]; then
-  [ -r /usr/bin/gcc-7 ] && export  CC=/usr/bin/gcc-7
-  [ -r /usr/bin/g++-7 ] && export CXX=/usr/bin/g++-7
+if [[ "${CONFIGURE_ARGS}" =~ .*"--with-devkit=".* ]]; then
+  echo "Using gcc from DevKit toolchain specified in configure args"
+elif [[ "${BUILD_ARGS}" =~ .*"--use-adoptium-devkit".* ]]; then
+  echo "Using gcc from Adoptium DevKit toolchain specified in --use-adoptium-devkit build args"
+else
+  if [ "${VARIANT}" == "${BUILD_VARIANT_DRAGONWELL}" ] && [ "$JAVA_FEATURE_VERSION" -eq 11 ] && [ -r /usr/local/gcc9/ ] && [ "${ARCHITECTURE}" == "aarch64" ]; then
+    # GCC9 rather than 10 requested by Alibaba for now
+    # Ref https://github.com/adoptium/temurin-build/issues/2250#issuecomment-732958466
+    export PATH=/usr/local/gcc9/bin:$PATH
+    export CC=/usr/local/gcc9/bin/gcc-9.3
+    export CXX=/usr/local/gcc9/bin/g++-9.3
+    # Enable GCC 10 for Java 17+ for repeatable builds, but not for our supported releases
+    # Ref https://github.com/adoptium/temurin-build/issues/2787
+  elif [ "${ARCHITECTURE}" == "riscv64" ] && [ -r /usr/bin/gcc-10 ]; then
+    # Enable GCC 10 for RISC-V, given the rapid evolution of RISC-V, the newer the GCC toolchain, the better
+    [ -r /usr/bin/gcc-10 ] && export  CC=/usr/bin/gcc-10
+    [ -r /usr/bin/g++-10 ] && export CXX=/usr/bin/g++-10
+  elif [ "$JAVA_FEATURE_VERSION" -ge 19 ] && [ -r /usr/local/gcc11/bin/gcc-11.2 ]; then
+    export PATH=/usr/local/gcc11/bin:$PATH
+    [ -r /usr/local/gcc11/bin/gcc-11.2 ] && export  CC=/usr/local/gcc11/bin/gcc-11.2
+    [ -r /usr/local/gcc11/bin/g++-11.2 ] && export CXX=/usr/local/gcc11/bin/g++-11.2
+    export LD_LIBRARY_PATH=/usr/local/gcc11/lib64:/usr/local/gcc11/lib
+  elif [ "$JAVA_FEATURE_VERSION" -ge 17 ] && [ -r /usr/local/gcc10/bin/gcc-10.3 ]; then
+    export PATH=/usr/local/gcc10/bin:$PATH
+    [ -r /usr/local/gcc10/bin/gcc-10.3 ] && export  CC=/usr/local/gcc10/bin/gcc-10.3
+    [ -r /usr/local/gcc10/bin/g++-10.3 ] && export CXX=/usr/local/gcc10/bin/g++-10.3
+    export LD_LIBRARY_PATH=/usr/local/gcc10/lib64:/usr/local/gcc10/lib
+  elif [ "$JAVA_FEATURE_VERSION" -gt 17 ] && [ -r /usr/bin/gcc-10 ]; then
+    [ -r /usr/bin/gcc-10 ] && export  CC=/usr/bin/gcc-10
+    [ -r /usr/bin/g++-10 ] && export CXX=/usr/bin/g++-10
+  # Continue to use GCC 7 if present for JDK<=17 and where 10 does not exist
+  elif [ -r /usr/local/gcc/bin/gcc-7.5 ]; then
+    export PATH=/usr/local/gcc/bin:$PATH
+    [ -r /usr/local/gcc/bin/gcc-7.5 ] && export  CC=/usr/local/gcc/bin/gcc-7.5
+    [ -r /usr/local/gcc/bin/g++-7.5 ] && export CXX=/usr/local/gcc/bin/g++-7.5
+    export LD_LIBRARY_PATH=/usr/local/gcc/lib64:/usr/local/gcc/lib
+  elif [ -r /usr/bin/gcc-7 ]; then
+    [ -r /usr/bin/gcc-7 ] && export  CC=/usr/bin/gcc-7
+    [ -r /usr/bin/g++-7 ] && export CXX=/usr/bin/g++-7
+  fi
 fi
 
 if [ "${VARIANT}" == "${BUILD_VARIANT_BISHENG}" ]; then

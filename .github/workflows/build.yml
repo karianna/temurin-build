@@ -1,3 +1,16 @@
+# ********************************************************************************
+# Copyright (c) 2020 Contributors to the Eclipse Foundation
+#
+# See the NOTICE file(s) with this work for additional
+# information regarding copyright ownership.
+#
+# This program and the accompanying materials are made
+# available under the terms of the Apache Software License 2.0
+# which is available at https://www.apache.org/licenses/LICENSE-2.0.
+#
+# SPDX-License-Identifier: Apache-2.0
+# ********************************************************************************
+
 ---
 name: Build
 
@@ -8,6 +21,7 @@ on:
       - "build-farm/**"
       - "sbin/**"
       - "**.sh"
+      - "!tooling/build_autotriage/**"
       - ".github/workflows/build.yml"
       - "security/**"
       - "cyclonedx-lib/**"
@@ -21,13 +35,11 @@ jobs:
   build_linux:
     name: Linux
     runs-on: ubuntu-latest
-    container:
-      image: ${{ matrix.image }}
     strategy:
       fail-fast: false
       matrix:
         os: [linux]
-        version: [jdk8u, jdk11u, jdk17u, jdk] #jdk head == jdk22
+        version: [jdk8u, jdk11u, jdk17u, jdk21u, jdk]
         variant: [temurin]
         image: [adoptopenjdk/centos7_build_image]
         include:
@@ -41,6 +53,10 @@ jobs:
             image: adoptopenjdk/alpine3_build_image
           - os: alpine-linux
             version: jdk17u
+            variant: temurin
+            image: adoptopenjdk/alpine3_build_image
+          - os: alpine-linux
+            version: jdk21u
             variant: temurin
             image: adoptopenjdk/alpine3_build_image
           - os: alpine-linux
@@ -64,21 +80,23 @@ jobs:
             variant: bisheng
             image: adoptopenjdk/centos7_build_image
     steps:
-    - uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3.6.0
+    - uses: actions/checkout@v4
 
-    - name: Build Linux
-      run: ./build-farm/make-adopt-build-farm.sh
-      env:
-        JAVA_TO_BUILD: ${{ matrix.version }}
-        ARCHITECTURE: x64
-        VARIANT: ${{ matrix.variant }}
-        TARGET_OS: ${{ matrix.os }}
-        FILENAME: OpenJDK.tar.gz
-        # Don't set the OS as we use both linux and alpine-linux
-        PLATFORM_CONFIG_LOCATION: AdoptOpenJDK/openjdk-build/master/build-farm/platform-specific-configurations
-        BUILD_ARGS: --create-sbom
+    - name: Build Linux within container image "${{ matrix.image }}"
+      run: |
+          docker run --rm -w /home/jenkins -v "$PWD":"/home/jenkins" \
+                      -e "JAVA_TO_BUILD=${{ matrix.version }}" \
+                      -e "ARCHITECTURE=x64" \
+                      -e "VARIANT=${{ matrix.variant }}" \
+                      -e "TARGET_OS=${{ matrix.os }}" \
+                      -e "FILENAME=OpenJDK.tar.gz" \
+                      -e "PLATFORM_CONFIG_LOCATION=adoptium/temurin-build/master/build-farm/platform-specific-configurations" \
+                      -e "BUILD_ARGS=--create-sbom" \
+                      -e "CONFIGURE_ARGS=--with-native-debug-symbols=none" \
+                      "${{ matrix.image }}" \
+                      ./build-farm/make-adopt-build-farm.sh
 
-    - uses: actions/upload-artifact@a8a3f3ad30e3422c9c7b888a15615d19a852ae32 # v3.1.3
+    - uses: actions/upload-artifact@v4
       name: Collect and Archive Artifacts
       with:
         name: ${{matrix.version}}-${{matrix.os}}-${{matrix.variant}}
@@ -91,16 +109,33 @@ jobs:
     - name: Set root of jdk image dir
       run: |
         imageroot=$(find "${HOME}/JDK" -name release -type f)
-        echo "TEST_JDK_HOME=$(dirname "${imageroot}")" >> "$GITHUB_ENV"
-    - name: Smoke test
-      uses: adoptium/run-aqa@6bacb4e732ad546eda1b09665b9067cdc87651f4 # v2
+        # TEST_JDK_HOME needs to be mapped to the docker container /home/jenkins mapping
+        echo "TEST_JDK_HOME=$(dirname "${imageroot}")" | sed "s,${HOME},/home/jenkins," >> "$GITHUB_ENV"
+
+    - name: Checkout aqa-tests repo
+      uses: actions/checkout@v4
       with:
-        build_list: 'functional/buildAndPackage'
-        target: '_extended.functional'
-        vendor_testRepos: "${{ github.event.pull_request.head.repo.html_url }}.git"
-        vendor_testBranches: "${{ github.head_ref }}"
-        vendor_testDirs: "/test/functional"
-    - uses: actions/upload-artifact@a8a3f3ad30e3422c9c7b888a15615d19a852ae32 # v3.1.3
+        repository: adoptium/aqa-tests
+        path: aqa-tests
+    - name: Run Smoke test within container image "${{ matrix.image }}"
+      env:
+        VENDOR_REPOS: ${{ github.event.pull_request.head.repo.html_url }}.git
+        VENDOR_BRANCH: ${{ github.head_ref }}
+      run: |
+        WORK_DIR="${PWD//${HOME}//home/jenkins}"
+        docker run --rm -w /home/jenkins -v "$HOME":"/home/jenkins" \
+            -e "TEST_JDK_HOME=${TEST_JDK_HOME}" \
+            -e "BUILD_LIST=functional/buildAndPackage" \
+            "${{ matrix.image }}" \
+            sh -c "cd ${WORK_DIR}/aqa-tests && \
+             ./get.sh --vendor_repos ${VENDOR_REPOS} \
+                      --vendor_branches ${VENDOR_BRANCH} \
+                      --vendor_dirs /test/functional && \
+             cd TKG && \
+             make compile && \
+             make _extended.functional"
+        
+    - uses: actions/upload-artifact@v4
       name: Collect and Archive SmokeTest Results
       if: failure()
       with:
@@ -115,13 +150,14 @@ jobs:
       matrix:
         os: [macOS]
         version: [
-          { name: jdk8u, distro: macos-11 },
-          { name: jdk11u, distro: macos-13 },
+          { name: jdk11u, distro: macos-14 },
+          { name: jdk17u, distro: macos-14 },
+          { name: jdk21u, distro: macos-14 }
         ]
         variant: [temurin]
 
     steps:
-    - uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3.6.0
+    - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
 
     # https://github.com/actions/runner-images/issues/6817
     - name: (Mac) Workaround for homebrew
@@ -130,60 +166,45 @@ jobs:
       run: |
           rm /usr/local/bin/2to3 || true
           rm /usr/local/bin/2to3-3.11 || true
+          rm /usr/local/bin/2to3-3.12 || true
           rm /usr/local/bin/idle3 || true
           rm /usr/local/bin/idle3.11 || true
+          rm /usr/local/bin/idle3.12 || true
           rm /usr/local/bin/pydoc3 || true
           rm /usr/local/bin/pydoc3.11 || true
+          rm /usr/local/bin/pydoc3.12 || true
           rm /usr/local/bin/python3 || true
           rm /usr/local/bin/python3.11 || true
+          rm /usr/local/bin/python3.12 || true
           rm /usr/local/bin/python3-config || true
           rm /usr/local/bin/python3.11-config || true
-            
+          rm /usr/local/bin/python3.12-config || true
+
     - name: Install Dependencies
       run: |
         brew install automake bash binutils freetype gnu-sed nasm
 
-    - uses: actions/setup-java@0ab4596768b603586c0de567f2430c30f5b0d2b0 # v3.13.0
-      id: setup-java
-      with:
-        java-version: 7
-        distribution: 'zulu'
-      if: matrix.version.name == 'jdk8u'
-      
-    - name: Select correct Xcode (JDK8)
-      if: matrix.version.name == 'jdk8u'
-      run: |
-        rm -rf /Applications/Xcode.app
-        ln -s /Applications/Xcode_11.7.app /Applications/Xcode.app
-
     - name: Select correct Xcode (JDK11+)
-      if: matrix.version.name != 'jdk8u'
       run: |
         rm -rf /Applications/Xcode.app
-        ln -s /Applications/Xcode_15.0.1.app /Applications/Xcode.app
+        ln -s /Applications/Xcode_15.2.app /Applications/Xcode.app
 
     - name: Build macOS
       run: |
         export JAVA_HOME=$JAVA_HOME_11_X64
         # jdk11u+ uses two part exploded & assemble build
-        if [ ${{ matrix.version.name }} != "jdk8u" ]; then
-          export BUILD_ARGS="--make-exploded-image --create-sbom"
-          ./build-farm/make-adopt-build-farm.sh
-          export BUILD_ARGS="--assemble-exploded-image --create-sbom"
-          ./build-farm/make-adopt-build-farm.sh
-        else
-          export BUILD_ARGS="--create-sbom"
-          ./build-farm/make-adopt-build-farm.sh
-        fi
+        export BUILD_ARGS="--make-exploded-image --create-sbom"
+        ./build-farm/make-adopt-build-farm.sh
+        export BUILD_ARGS="--assemble-exploded-image --create-sbom"
+        ./build-farm/make-adopt-build-farm.sh
       env:
         JAVA_TO_BUILD: ${{ matrix.version.name }}
         ARCHITECTURE: x64
         VARIANT: ${{ matrix.variant }}
         TARGET_OS: mac
         FILENAME: OpenJDK.tar.gz
-        JDK7_BOOT_DIR: ${{ steps.setup-java.outputs.path }}
-      
-    - uses: actions/upload-artifact@a8a3f3ad30e3422c9c7b888a15615d19a852ae32 # v3.1.3
+
+    - uses: actions/upload-artifact@5d5d22a31266ced268874388b861e4b58bb5c2f3 # v4.3.1
       name: Collect and Archive Artifacts
       with:
         name: ${{matrix.version.name}}-${{matrix.os}}-${{matrix.variant}}
@@ -206,7 +227,7 @@ jobs:
         vendor_testRepos: "${{ github.event.pull_request.head.repo.html_url }}.git"
         vendor_testBranches: "${{ github.head_ref }}"
         vendor_testDirs: "/test/functional"
-    - uses: actions/upload-artifact@a8a3f3ad30e3422c9c7b888a15615d19a852ae32 # v3.1.3
+    - uses: actions/upload-artifact@5d5d22a31266ced268874388b861e4b58bb5c2f3 # v4.3.1
       name: Collect and Archive SmokeTest Results
       if: failure()
       with:
@@ -220,7 +241,7 @@ jobs:
        fail-fast: false
        matrix:
          os: [windows-2022]
-         version: [jdk8u, jdk11u, jdk17u, jdk]
+         version: [jdk11u, jdk17u, jdk21u, jdk]
          variant: [temurin]
 
      env:
@@ -230,7 +251,7 @@ jobs:
      steps:
      - name: Restore cygwin packages from cache
        id: cygwin
-       uses: actions/cache@704facf57e6136b1bc63b828d79edcd491f0ee84 # v3.3.2
+       uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
        with:
         path: C:\cygwin64
         key: cygwin-packages-${{ runner.os }}-v1
@@ -258,14 +279,14 @@ jobs:
            wget,
            zip
 
-     - uses: actions/setup-java@0ab4596768b603586c0de567f2430c30f5b0d2b0 # v3.13.0
+     - uses: actions/setup-java@7a6d8a8234af8eb26422e24e3006232cccaa061b # v4.6.0
        id: setup-java7
        with:
          distribution: 'zulu'
          java-version: 7
        if: matrix.version == 'jdk8u'
 
-     - uses: actions/setup-java@0ab4596768b603586c0de567f2430c30f5b0d2b0 # v3.13.0
+     - uses: actions/setup-java@7a6d8a8234af8eb26422e24e3006232cccaa061b # v4.6.0
        id: setup-java11
        with:
          distribution: 'temurin'
@@ -274,7 +295,7 @@ jobs:
      - name: Restore Visual Studio 2017 from cache
        id: vs2017
        if: matrix.version == 'jdk8u'
-       uses: actions/cache@704facf57e6136b1bc63b828d79edcd491f0ee84 # v3.3.2
+       uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
        with:
          path: ~/vs2017.exe
          key: vs2017
@@ -282,7 +303,7 @@ jobs:
      - name: Restore Visual Studio 2019 from cache
        id: vs2019
        if: matrix.version == 'jdk11u' || matrix.version == 'jdk17u'
-       uses: actions/cache@704facf57e6136b1bc63b828d79edcd491f0ee84 # v3.3.2
+       uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
        with:
          path: ~/vs2019.exe
          key: vs2019
@@ -304,6 +325,19 @@ jobs:
          curl -L "$env:VS2017_URL" -o "$HOME/vs2017.exe"
        if: steps.vs2017.outputs.cache-hit != 'true' && matrix.version == 'jdk8u'
 
+     - name: Verify Download Of Visual Studio 2017
+       shell: powershell
+       run: |
+         $expected_checksum="7ED8FA27575648163E07548FF5667B55B95663A2323E2B2A5F87B16284E481E6"
+         $actual_checksum=(Get-FileHash -Algorithm SHA256 -Path $HOME/vs2017.exe | Select-Object -ExpandProperty Hash)
+         echo "Expect : $expected_checksum"
+         echo "Actual : $actual_checksum"
+         if ($expected_checksum -ne $actual_checksum) {
+           Write-Output "Error - Checksum Verification Failed - Exiting"
+           exit 1
+         }
+       if: steps.vs2017.outputs.cache-hit != 'true' && matrix.version == 'jdk8u'
+
      - name: Install Visual Studio 2017
        if: matrix.version == 'jdk8u'
        run: >
@@ -317,6 +351,19 @@ jobs:
      - name: Download Visual Studio 2019
        run: |
          curl -L "$env:VS2019_URL" -o "$HOME/vs2019.exe"
+       if: steps.vs2019.outputs.cache-hit != 'true' && (matrix.version == 'jdk11u' || matrix.version == 'jdk17u')
+
+     - name: Verify Download Of Visual Studio 2019
+       shell: powershell
+       run: |
+         $expected_checksum="F29399A618BD3A8D1DCC96D349453F686B6176590D904308402A6402543E310B"
+         $actual_checksum=(Get-FileHash -Algorithm SHA256 -Path $HOME/vs2019.exe | Select-Object -ExpandProperty Hash)
+         echo "Expect : $expected_checksum"
+         echo "Actual : $actual_checksum"
+         if ($expected_checksum -ne $actual_checksum) {
+           Write-Output "Error - Checksum Verification Failed - Exiting"
+           exit 1
+         }
        if: steps.vs2019.outputs.cache-hit != 'true' && (matrix.version == 'jdk11u' || matrix.version == 'jdk17u')
 
      - name: Install Visual Studio 2019
@@ -341,7 +388,7 @@ jobs:
        shell: bash
        run: mkdir -p "$HOME" && git config --system core.autocrlf false && git config --global --add safe.directory '*'
 
-     - uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3.6.0
+     - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
        with:
          set-safe-directory: false
 
@@ -378,14 +425,14 @@ jobs:
          FILENAME: OpenJDK.zip
          BUILD_ARGS: --create-sbom
 
-     - uses: actions/upload-artifact@a8a3f3ad30e3422c9c7b888a15615d19a852ae32 # v3.1.3
+     - uses: actions/upload-artifact@5d5d22a31266ced268874388b861e4b58bb5c2f3 # v4.3.1
        name: Collect and Archive Artifacts
        with:
          name: ${{matrix.version}}-${{matrix.os}}-${{matrix.variant}}
          path: workspace/target/*
 
      - name: Restore build artifacts
-       uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3.0.2
+       uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
        with:
          name: ${{matrix.version}}-${{matrix.os}}-${{matrix.variant}}
          path: ~/${{matrix.version}}-${{matrix.os}}-${{matrix.variant}}
@@ -411,7 +458,7 @@ jobs:
          vendor_testRepos: "${{ github.event.pull_request.head.repo.html_url }}.git"
          vendor_testBranches: "${{ github.head_ref }}"
          vendor_testDirs: "/test/functional"
-     - uses: actions/upload-artifact@a8a3f3ad30e3422c9c7b888a15615d19a852ae32 # v3.1.3
+     - uses: actions/upload-artifact@5d5d22a31266ced268874388b861e4b58bb5c2f3 # v4.3.1
        name: Collect and Archive SmokeTest Results
        if: failure()
        with:

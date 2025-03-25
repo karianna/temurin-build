@@ -22,10 +22,17 @@ that you are building for further details.
 
 \fBExample:\fR The simplest use case to run is:
 
-"./makejdk-any-platform.sh --docker jdk8u"
+"./makejdk-any-platform.sh -D fedora:latest jdk8u"
 
 This will start a Docker container and build you the latest Java 8 Temurin
 binary from the source at https://github.com/adoptium/openjdk-jdk8u
+Note that the main argument, in this case jdk8, is compared and enforced
+against an enumeration - jdk8, jdk8u, ... jdk21, jdk21u, ...jdk. Nothing else.
+You can workaround this by \-\-version switch.
+
+"./makejdk-any-platform.sh -l my/dir/or/archive.tar.gz jdk22u"
+
+This will start a build of Java 22 from your local sources
 
 Please visit https://www.adoptium.net for further support
 
@@ -45,6 +52,12 @@ Build JDK (tip), defaults to https://github.com/adoptium/jdk
 
 .SH OPTIONS
 .TP
+.BR \-A ", " \-\-skip-alsa
+Skip downloading of alsa automatically.
+If you do so, the underlying configure will detect system lib and headers.
+If you wish to point to some custom build/install pass it via \fI\-C, \-\-configure-args <args>\fR
+Presence of \-\-with-alsa in  \-\-configure-args will also not include freshly installed alsa to build.
+.TP
 .BR \-b ", " \-\-branch " " \fI<branch>\fR
 specify a custom branch to build from, e.g. dev.
 For reference, Adoptium GitHub source repos default to the \fI<dev>\fR
@@ -57,8 +70,8 @@ For reference, OpenJDK version numbers look like 1.8.0_162-b12 (for Java 8) or
 9.0.4+11 (for Java 9+) with the build number being the suffix at the end.
 .TP
 .BR \-\-build-variant " " \fI<variant_name>\fR
-specify a OpenJDK build variant, e.g. openj9.
-For reference, the default variant is hotspot and does not need to be specified.
+specify a OpenJDK build variant, e.g. openj9 or temurin.
+For reference, the default variant is \fBhotspot\fR and does not need to be specified.
 .TP
 .BR \-c ", " \-\-clean-docker-build
 removes the existing docker container and persistent volume before starting
@@ -84,11 +97,18 @@ specify the location for the built binary, e.g. /path/.
 This is typically used in conjunction with \fB<-T>\fR to create a custom path
 / file name for the resulting binary.
 .TP
-.BR \-D ", " \-\-docker
-build OpenJDK in a docker container.
+.BR \-D ", " \-\-docker ", " \-\-podman  " " \fI[base_to_use]\fR
+build OpenJDK in a docker/podman container. -D will autodetect, using podman if found, docker otherwise.
+You can optionally set base image to use. Default is ubuntu:18.04. Dnf/apt is determined by hardcoded list.
+When podman is used, there is bug requiring \fI--custom-cacerts\fR to be used under some circumstances.
+It is known issue: https://github.com/adoptium/temurin-build/issues/3862
 .TP
 .BR \-\-debug-docker
 debug OpenJDK build script in a docker container. Only valid if \fB-D\fR is selected.
+.TP
+.BR \-\-disable-adopt-branch-safety
+disable the default check for correct tags and README.JAVASE in case of \fBtemurin\fR as --build-variant.
+This is mandatory, when you are building \fBtemurin\fR variant from archive or directory without repository metadata.
 .TP
 .BR \-\-disable-shallow-git-clone
 disable the default \fB--depth=1\fR shallow cloning of git repo(s).
@@ -113,14 +133,21 @@ print this help.
 .BR \-i ", " \-\-ignore-container
 ignore the existing docker container if you have one already.
 .TP
-.BR \-J ", " \-\-jdk-boot-dir " " \fI<jdk_boot_dir>\fR
+.BR \-J ", " \-\-jdk-boot-dir " " \fI<jdk_boot_dir>\fR "; " \-J ", " \-\-jdk-boot-dir " " \fIdownload\fR
 specify the JDK boot dir.
 For reference, OpenJDK needs the previous version of a JDK in order to build
 itself. You should select the path to a JDK install that is N-1 versions below
-the one you are trying to build.
+the one you are trying to build. On some platforms, you can use magic keyword
+of `download`, and boot jdk will be downloaded for you in best attempt. It will
+be reused as long as you keep workspace or clean libs.
 .TP
 .BR \-k ", " \-\-keep
 if using docker, keep the container after the build.
+.TP
+.BR  \-l ", " \-\-openjdk\-source\-location " " \fI<dir/archive>\fR
+If set, must point to directory or archive with valid OpenJDK source code.
+This local source code will be used instead of cloning from a git repository and without any git tag or git reset.
+You still have to set the version argument though, and it is recommended that you add \-\-tag too so that the top level directory names in the output, as well as the details in "java -version" are created correctly.
 .TP
 .BR \-\-make-args " " \fI<args>\fR
 specify any custom user make arguments.
@@ -174,7 +201,7 @@ Use certs defined in JEP319 in Java 8/9. Deprecated, has no effect.
 .BR \-\-custom-cacerts " " \fI<true|false>\fR
 If true (default), a custom cacerts file will be generated based on Mozilla's
 list of CA certificates (see folder security/). If false, the file shipped by
-OpenJDK will be used. 
+OpenJDK will be used.
 .TP
 .BR \-\-vendor " " \fI<vendor>\fR
 specify the vendor name
@@ -190,14 +217,19 @@ specify the vendor vm bug url
 .TP
 .BR \-v ", " \-\-version " " \fI<version>\fR
 specify the OpenJDK version to build e.g. jdk8u.  Left for backwards compatibility.
+Useful, when cloning a repo with a non-uniform name, e.g., shenandoah-jdk8u (main version argument),
+to tell the build that you are effectively building a jdk8u binary.
 .TP
 .BR \-V ", " \-\-jvm-variant " " \fI<jvm_variant>\fR
 specify the JVM variant (server or client), defaults to server.
+.TP
+.BR \-\-wsl
+configure the build to run natively on WSL (Windows Subsystem for Linux)
 
 .SH EXAMPLE USAGE
 
 Some common example usages:
 
-"./makejdk-any-platform --docker jdk8u"
+"./makejdk-any-platform --sudo --docker jdk8u"
 
 "./makejdk-any-platform -s /home/openjdk10/src -d /home/openjdk/target -T MyOpenJDK10.tar.gz jdk10"

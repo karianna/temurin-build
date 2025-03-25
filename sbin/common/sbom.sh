@@ -1,4 +1,17 @@
 #!/bin/bash
+# ********************************************************************************
+# Copyright (c) 2022 Contributors to the Eclipse Foundation
+#
+# See the NOTICE file(s) with this work for additional
+# information regarding copyright ownership.
+#
+# This program and the accompanying materials are made
+# available under the terms of the Apache Software License 2.0
+# which is available at https://www.apache.org/licenses/LICENSE-2.0.
+#
+# SPDX-License-Identifier: Apache-2.0
+# ********************************************************************************
+
 # Create a default SBOM json file: sbomJson
 createSBOMFile() {
   local javaHome="${1}"
@@ -192,18 +205,3 @@ addSBOMComponentPropertyFromFile() {
   fi
 }
 
-# Function not in use
-# Ref: https://cyclonedx.org/docs/1.4/json/#externalReferences
-addExternalReference() {
-  local javaHome="${1}"
-  local classpath="${2}"
-  local jsonFile="${3}"
-  local url="${4}" # required
-  local comment="${5}"
-  local hash="${6}"
-  if [ -z "${hash}" ]; then
-    "${javaHome}"/bin/java -cp "${classpath}" temurin.sbom.TemurinGenSBOM --addExternalReference --jsonFile "${jsonFile}" --url "${url}" --comment "${comment}" --hash "${hash}"
-  else
-    "${javaHome}"/bin/java -cp "${classpath}" temurin.sbom.TemurinGenSBOM --addExternalReference --jsonFile "${jsonFile}" --url "${url}" --comment "${comment}"
-  fi
-}

@@ -1,19 +1,17 @@
 #!/bin/bash
 # shellcheck disable=SC1091,SC2140
-
-################################################################################
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# ********************************************************************************
+# Copyright (c) 2018 Contributors to the Eclipse Foundation
 #
-#      https://www.apache.org/licenses/LICENSE-2.0
+# See the NOTICE file(s) with this work for additional
+# information regarding copyright ownership.
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-################################################################################
+# This program and the accompanying materials are made
+# available under the terms of the Apache Software License 2.0
+# which is available at https://www.apache.org/licenses/LICENSE-2.0.
+#
+# SPDX-License-Identifier: Apache-2.0
+# ********************************************************************************
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 # shellcheck source=sbin/common/constants.sh
@@ -54,10 +52,10 @@ else
     # JDK17 requires metal (included in full xcode) as does JDK11 on aarch64
     # JDK11 on x64 is matched for consistency
     XCODE_SWITCH_PATH="/Applications/Xcode.app"
-    # JDK11 and 17 on Mac (x86 and aarch) has excessive warnings.
+    # JDK11 (x86 and aarch) has excessive warnings.
     # This is due to a harfbuzz fix which is pending backport.
     # Suppressing the warnings for now to aid triage.
-    if [[ "$JAVA_FEATURE_VERSION" -le 17 ]]; then
+    if [[ "$JAVA_FEATURE_VERSION" -le 11 ]]; then
       export cxx_flags_bucket="${cxx_flags_bucket} -Wno-deprecated-builtins -Wno-deprecated-declarations -Wno-deprecated-non-prototype"
       export c_flags_bucket="${c_flags_bucket} -Wno-deprecated-builtins -Wno-deprecated-declarations -Wno-deprecated-non-prototype"
     fi
@@ -72,7 +70,7 @@ else
     if [ "${ARCHITECTURE}" == "x64" ]; then
       # We can only target 10.9 on intel macs
       export cxx_flags_bucket="${cxx_flags_bucket} -mmacosx-version-min=10.9"
-    elif [ "${ARCHITECTURE}" == "aarch64" ]; then
+    elif [[ "${MACHINEARCHITECTURE}" == "x64" ]] && [[ "${ARCHITECTURE}" == "aarch64" ]]; then
       export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --openjdk-target=aarch64-apple-darwin"
     fi
   fi
@@ -107,13 +105,18 @@ if [ "${JDK_BOOT_VERSION}" == "7" ]; then
 fi
 BOOT_JDK_VARIABLE="JDK${JDK_BOOT_VERSION}_BOOT_DIR"
 if [ ! -d "$(eval echo "\$$BOOT_JDK_VARIABLE")" ]; then
-  bootDir="$PWD/jdk-$JDK_BOOT_VERSION"
+  bootDir="$PWD/jdk$JDK_BOOT_VERSION"
   # Note we export $BOOT_JDK_VARIABLE (i.e. JDKXX_BOOT_DIR) here
   # instead of BOOT_JDK_VARIABLE (no '$').
   export "${BOOT_JDK_VARIABLE}"="$bootDir/Contents/Home"
   if [ ! -x "$bootDir/Contents/Home/bin/javac" ]; then
-    # To support multiple vendor names we set a jdk-* symlink pointing to the actual boot JDK
-    if [ -x "/Library/Java/JavaVirtualMachines/jdk-${JDK_BOOT_VERSION}/Contents/Home/bin/javac" ]; then
+    # To support multiple vendor names we set a jdk* symlink pointing to the actual boot JDK
+    if [ -x "/Library/Java/JavaVirtualMachines/jdk${JDK_BOOT_VERSION}/Contents/Home/bin/javac" ]; then
+      echo "Could not use ${BOOT_JDK_VARIABLE} - using /Library/Java/JavaVirtualMachines/jdk${JDK_BOOT_VERSION}/Contents/Home"
+      export "${BOOT_JDK_VARIABLE}"="/Library/Java/JavaVirtualMachines/jdk${JDK_BOOT_VERSION}/Contents/Home"
+    elif [ -x "/Library/Java/JavaVirtualMachines/jdk-${JDK_BOOT_VERSION}/Contents/Home/bin/javac" ]; then
+      # TODO: This temporary ELIF allows us to accomodate undesired dashes that may be present
+      # in boot directory names (e.g. jdk-10) on Orka node images (fix pending).
       echo "Could not use ${BOOT_JDK_VARIABLE} - using /Library/Java/JavaVirtualMachines/jdk-${JDK_BOOT_VERSION}/Contents/Home"
       export "${BOOT_JDK_VARIABLE}"="/Library/Java/JavaVirtualMachines/jdk-${JDK_BOOT_VERSION}/Contents/Home"
     elif [ "$JDK_BOOT_VERSION" -ge 8 ]; then # Adoptium has no build pre-8

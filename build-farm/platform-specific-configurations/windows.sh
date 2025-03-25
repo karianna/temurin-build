@@ -1,23 +1,22 @@
 #!/bin/bash
 # shellcheck disable=SC1091
-
-################################################################################
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# ********************************************************************************
+# Copyright (c) 2018 Contributors to the Eclipse Foundation
 #
-#      https://www.apache.org/licenses/LICENSE-2.0
+# See the NOTICE file(s) with this work for additional
+# information regarding copyright ownership.
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-################################################################################
+# This program and the accompanying materials are made
+# available under the terms of the Apache Software License 2.0
+# which is available at https://www.apache.org/licenses/LICENSE-2.0.
+#
+# SPDX-License-Identifier: Apache-2.0
+# ********************************************************************************
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 # shellcheck source=sbin/common/constants.sh
 source "$SCRIPT_DIR/../../sbin/common/constants.sh"
+source "$SCRIPT_DIR/../../sbin/common/downloaders.sh"
 
 export ANT_HOME=/cygdrive/C/Projects/OpenJDK/apache-ant-1.10.1
 export DRAGONWELL8_BOOTSTRAP=/cygdrive/C/openjdk/dragonwell-bootstrap/jdk8u272-ga
@@ -25,7 +24,7 @@ export ALLOW_DOWNLOADS=true
 export LANG=C
 export OPENJ9_NASM_VERSION=2.13.03
 
-TOOLCHAIN_VERSION=""
+TOOLCHAIN_VERSION="2022"
 
 if [ "$ARCHITECTURE" == "aarch64" ]; then
   # Windows aarch64 cross compiles requires same version boot jdk
@@ -45,55 +44,7 @@ if [ ! -d "$(eval echo "\$$BOOT_JDK_VARIABLE")" ]; then
       # shellcheck disable=SC2140
       export "${BOOT_JDK_VARIABLE}"="/cygdrive/c/openjdk/jdk-${JDK_BOOT_VERSION}"
     elif [ "$JDK_BOOT_VERSION" -ge 8 ]; then # Adoptium has no build pre-8
-      # This is needed to convert x86-32 to x32 which is what the API uses
-      export downloadArch
-      case "$ARCHITECTURE" in
-         "x86-32") downloadArch="x32";;
-        "aarch64") downloadArch="x64";;
-                *) downloadArch="$ARCHITECTURE";;
-      esac
-      releaseType="ga"
-      vendor="eclipse"
-      api="adoptium"
-      apiUrlTemplate="https://api.\${api}.net/v3/binary/latest/\${JDK_BOOT_VERSION}/\${releaseType}/windows/\${downloadArch}/jdk/hotspot/normal/\${vendor}"
-      apiURL=$(eval echo ${apiUrlTemplate})
-      echo "Downloading GA release of boot JDK version ${JDK_BOOT_VERSION} from ${apiURL}"
-      # make-adopt-build-farm.sh has 'set -e'. We need to disable that for
-      # the fallback mechanism, as downloading of the GA binary might fail
-      set +e
-      wget -q "${apiURL}" -O openjdk.zip
-      retVal=$?
-      set -e
-      if [ $retVal -ne 0 ]; then
-        # We must be a JDK HEAD build for which no boot JDK exists other than
-        # nightlies?
-        echo "Downloading GA release of boot JDK version ${JDK_BOOT_VERSION} failed."
-        # shellcheck disable=SC2034
-        releaseType="ea"
-        # shellcheck disable=SC2034
-        vendor="adoptium"
-        apiURL=$(eval echo ${apiUrlTemplate})
-        echo "Attempting to download EA release of boot JDK version ${JDK_BOOT_VERSION} from ${apiURL}"
-        set +e
-        wget -q "${apiURL}" -O openjdk.zip
-        retVal=$?
-        set -e
-        if [ $retVal -ne 0 ]; then
-          # If no binaries are available then try from adoptopenjdk
-          echo "Downloading Temurin release of boot JDK version ${JDK_BOOT_VERSION} failed."
-          # shellcheck disable=SC2034
-          releaseType="ga"
-          # shellcheck disable=SC2034
-          vendor="adoptopenjdk"
-          # shellcheck disable=SC2034
-          api="adoptopenjdk"
-          apiURL=$(eval echo ${apiUrlTemplate})
-          echo "Attempting to download GA release of boot JDK version ${JDK_BOOT_VERSION} from ${apiURL}"
-          wget -q "${apiURL}" -O openjdk.zip
-        fi
-      fi
-      unzip -q openjdk.zip
-      mv "$(ls -d jdk-"${JDK_BOOT_VERSION}"*)" "$bootDir"
+      downloadWindowsBootJDK "${ARCHITECTURE}" "${JDK_BOOT_VERSION}" "$bootDir"
     fi
   fi
 fi
@@ -121,7 +72,6 @@ then
       # https://github.com/adoptium/temurin-build/issues/243
       export INCLUDE="C:\Program Files\Debugging Tools for Windows (x64)\sdk\inc;$INCLUDE"
       export PATH="/c/cygwin64/bin:/usr/bin:$PATH"
-      TOOLCHAIN_VERSION="2017"
     elif [ "${JAVA_TO_BUILD}" == "${JDK11_VERSION}" ]
     then
       export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --with-freemarker-jar=/cygdrive/c/openjdk/freemarker.jar"
@@ -135,20 +85,16 @@ then
   else
     if [ "${JAVA_TO_BUILD}" == "${JDK8_VERSION}" ]
     then
-      TOOLCHAIN_VERSION="2013"
       export BUILD_ARGS="${BUILD_ARGS} --freetype-version 2.5.3"
       export PATH="/cygdrive/c/openjdk/make-3.82/:$PATH"
     elif [ "${JAVA_TO_BUILD}" == "${JDK11_VERSION}" ]
     then 
-      export TOOLCHAIN_VERSION="2017"
       export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --disable-ccache"
     elif [ "$JAVA_FEATURE_VERSION" -gt 11 ] && [ "$JAVA_FEATURE_VERSION" -lt 21 ]
     then
-      TOOLCHAIN_VERSION="2019"
       export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --disable-ccache"
     elif [ "$JAVA_FEATURE_VERSION" -ge 21 ]
     then
-      TOOLCHAIN_VERSION="2022"
       export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --disable-ccache"
     fi
   fi
@@ -167,25 +113,21 @@ then
       export INCLUDE="C:\Program Files\Debugging Tools for Windows (x64)\sdk\inc;$INCLUDE"
       export PATH="$PATH:/c/cygwin64/bin"
       export BUILD_ARGS="${BUILD_ARGS} --skip-freetype"
-      TOOLCHAIN_VERSION="2017"
     elif [ "${JAVA_TO_BUILD}" == "${JDK9_VERSION}" ]
     then
-      TOOLCHAIN_VERSION="2013"
       export BUILD_ARGS="${BUILD_ARGS} --freetype-version 2.5.3"
     elif [ "${JAVA_TO_BUILD}" == "${JDK10_VERSION}" ]
     then
       export BUILD_ARGS="${BUILD_ARGS} --freetype-version 2.5.3"
     elif [ "$JAVA_FEATURE_VERSION" -lt 19 ]
     then
-      TOOLCHAIN_VERSION="2019"
       export BUILD_ARGS="${BUILD_ARGS} --skip-freetype"
     elif [ "$JAVA_FEATURE_VERSION" -ge 19 ]
     then
-      TOOLCHAIN_VERSION="2022"
       export BUILD_ARGS="${BUILD_ARGS} --skip-freetype"
     fi
 
-    CUDA_VERSION=9.0
+    CUDA_VERSION=9.1
     CUDA_HOME_FULL="C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v$CUDA_VERSION"
     # use cygpath to map to 'short' names (without spaces)
     CUDA_HOME=$(cygpath -ms "$CUDA_HOME_FULL")
@@ -208,18 +150,11 @@ then
     # NASM required for OpenSSL support as per #604
     export PATH="/cygdrive/c/Program Files/LLVM/bin:/usr/bin:/cygdrive/c/openjdk/nasm-$OPENJ9_NASM_VERSION:$PATH"
   else
-    TOOLCHAIN_VERSION="2017"
     export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --disable-ccache"
     if [ "${JAVA_TO_BUILD}" == "${JDK8_VERSION}" ]
     then
       export BUILD_ARGS="${BUILD_ARGS} --freetype-version 39ce3ac499d4cd7371031a062f410953c8ecce29" # 2.8.1
       export PATH="/cygdrive/c/openjdk/make-3.82/:$PATH"
-    elif [ "$JAVA_FEATURE_VERSION" -ge 11 ] && [ "$JAVA_FEATURE_VERSION" -lt 21 ]
-    then
-      TOOLCHAIN_VERSION="2019"
-    elif [ "$JAVA_FEATURE_VERSION" -ge 21 ]
-    then
-      TOOLCHAIN_VERSION="2022"
     fi
   fi
 

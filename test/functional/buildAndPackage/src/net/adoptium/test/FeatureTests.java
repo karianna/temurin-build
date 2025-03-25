@@ -1,30 +1,41 @@
 /*
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * ********************************************************************************
+ * Copyright (c) 2021, 2024 Contributors to the Eclipse Foundation
  *
- *      https://www.apache.org/licenses/LICENSE-2.0
+ * See the NOTICE file(s) with this work for additional
+ * information regarding copyright ownership.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * This program and the accompanying materials are made
+ * available under the terms of the Apache Software License 2.0
+ * which is available at https://www.apache.org/licenses/LICENSE-2.0.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ * ********************************************************************************
  */
 
 package net.adoptium.test;
 
-import org.testng.annotations.Test;
-
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.logging.Logger;
-
-import static net.adoptium.test.JdkPlatform.Architecture;
-import static net.adoptium.test.JdkPlatform.OperatingSystem;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertTrue;
+
+import java.io.IOException;
+import java.nio.file.FileVisitResult;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.logging.Logger;
+import java.util.regex.Pattern;
+
+import org.testng.annotations.BeforeTest;
+import org.testng.annotations.Test;
+
+import net.adoptium.test.JdkPlatform.Architecture;
+import net.adoptium.test.JdkPlatform.OperatingSystem;
 
 /**
  * Tests the availability of various features like garbage collectors, flight recorder, that need to be enabled via
@@ -39,6 +50,133 @@ public class FeatureTests {
 
     private final JdkPlatform jdkPlatform = new JdkPlatform();
 
+    private String testJdkHome = null;
+
+    /**
+     * Ensure TEST_JDK_HOME environment variable is set for every test in this class.
+     */
+    @BeforeTest
+    public final void ensureTestJDKSet() {
+        String tmpJdkHome = System.getenv("TEST_JDK_HOME");
+        if (tmpJdkHome == null) {
+            throw new AssertionError("TEST_JDK_HOME is not set");
+        }
+        this.testJdkHome = tmpJdkHome;
+    }
+
+    /**
+     * Tests whether JEP 493 is enabled for Eclipse Temurin builds.
+     *
+     * @see <a href="https://openjdk.java.net/jeps/493">JEP 493: Linking Run-Time Images without JMODs</a>
+     */
+    @Test
+    public void testLinkableRuntimeJDK24Plus() {
+        // Only JDK 24 and better and temurin builds have this enabled
+        if (jdkVersion.isNewerOrEqual(24) && isVendorAdoptium()) {
+            List<String> command = new ArrayList<>();
+            command.add(String.format("%s/bin/jlink", testJdkHome));
+            command.add("-J-Duser.lang=en");
+            command.add("--help");
+
+            try {
+                ProcessBuilder processBuilder = new ProcessBuilder(command);
+                Process process = processBuilder.start();
+
+                String stdout = StreamUtils.consumeStream(process.getInputStream());
+                if (process.waitFor() != 0) {
+                    throw new AssertionError("Could not run jlink --help");
+                }
+                String[] lines = stdout.split(Pattern.quote(System.lineSeparator()));
+                boolean seenCapabilities = false;
+                String capLine = "";
+                for (int i = 0; i < lines.length; i++) {
+                    if (lines[i].trim().startsWith("Capabilities:")) {
+                        seenCapabilities = true;
+                        continue; // skip Capabilities line
+                    }
+                    if (!seenCapabilities) {
+                        continue;
+                    }
+                    if (seenCapabilities) {
+                        capLine = lines[i].trim();
+                        break;
+                    }
+                }
+                LOGGER.info(String.format("Matched 'Capabilities:' line: %s", capLine));
+                assertEquals(capLine, "Linking from run-time image enabled",
+                             "jlink should have enabled run-time image link capability");
+            } catch (InterruptedException | IOException e) {
+                throw new RuntimeException("Failed to launch JVM", e);
+            }
+        }
+    }
+
+    /**
+     * Tests whether basic jlink works using the default module path. The only
+     * included module in the output image is {@code java.base}.
+     */
+    @Test
+    public void testJlinkJdk11AndBetter() throws IOException {
+        // Only JDK 11 (JDK 9, really) and better have jlink
+        if (jdkVersion.isNewerOrEqual(11)) {
+            Path output = Paths.get("java.base-image");
+            ensureOutputDirectoryDeleted(output);
+            List<String> command = new ArrayList<>();
+            command.add(String.format("%s/bin/jlink", testJdkHome));
+            command.add("--add-modules");
+            command.add("java.base");
+            command.add("--output");
+            command.add(output.toString());
+            command.add("--verbose");
+
+            try {
+                ProcessBuilder processBuilder = new ProcessBuilder(command);
+                processBuilder.inheritIO();
+                Process process = processBuilder.start();
+
+                if (process.waitFor() != 0) {
+                    throw new AssertionError("Basic jlink smoke test failed! " + command);
+                }
+                LOGGER.info("Basic jlink smoke test passed. Command was: " + command);
+            } catch (InterruptedException | IOException e) {
+                throw new RuntimeException("Failed to launch JVM", e);
+            } finally {
+                ensureOutputDirectoryDeleted(output);
+            }
+        }
+    }
+
+    private static void ensureOutputDirectoryDeleted(final Path path) throws IOException {
+        if (Files.exists(path)) {
+            deleteDirRecursively(path);
+        }
+    }
+
+    private static void deleteDirRecursively(final Path path) throws IOException {
+        Files.walkFileTree(path, new SimpleFileVisitor<Path>() {
+
+            @Override
+            public FileVisitResult postVisitDirectory(final Path dir, final IOException e) throws IOException {
+                Files.delete(dir);
+                return FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public FileVisitResult visitFile(final Path file, final BasicFileAttributes attrs) throws IOException {
+                if (Files.isDirectory(file)) {
+                    // deleted in post-visit
+                    return FileVisitResult.CONTINUE;
+                }
+                Files.delete(file);
+                return FileVisitResult.CONTINUE;
+            }
+        });
+    }
+
+    private boolean isVendorAdoptium() {
+        return System.getProperty("java.vendor", "").toLowerCase(Locale.US).contains("adoptium");
+    }
+
     /**
      * Tests whether Shenandoah GC is available.
      * <p/>
@@ -52,10 +190,6 @@ public class FeatureTests {
      */
     @Test
     public void testShenandoahAvailable() {
-        String testJdkHome = System.getenv("TEST_JDK_HOME");
-        if (testJdkHome == null) {
-            throw new AssertionError("TEST_JDK_HOME is not set");
-        }
 
         boolean shouldBePresent = false;
         if ((jdkVersion.isNewerOrEqual(15) || jdkVersion.isNewerOrEqualSameFeature(11, 0, 9))) {
@@ -72,9 +206,11 @@ public class FeatureTests {
             }
         }
         if (jdkVersion.isNewerOrEqual(17) && jdkPlatform.runsOn(OperatingSystem.LINUX, Architecture.PPC64LE)) {
-        	shouldBePresent = true;
+            shouldBePresent = true;
         }
-        if (jdkVersion.isNewerOrEqual(19) || jdkVersion.isNewerOrEqualSameFeature(17, 0, 9)) {
+        if (jdkVersion.isNewerOrEqual(19)
+                || jdkVersion.isNewerOrEqualSameFeature(17, 0, 9)
+                || jdkVersion.isNewerOrEqualSameFeature(11, 0, 23)) {
             if (jdkPlatform.runsOn(OperatingSystem.LINUX, Architecture.RISCV64)) {
                 shouldBePresent = true;
             }
@@ -113,10 +249,6 @@ public class FeatureTests {
      */
     @Test
     public void testZGCAvailable() {
-        String testJdkHome = System.getenv("TEST_JDK_HOME");
-        if (testJdkHome == null) {
-            throw new AssertionError("TEST_JDK_HOME is not set");
-        }
 
         boolean shouldBePresent = false;
         if (jdkVersion.isNewerOrEqual(15)) {
@@ -181,10 +313,6 @@ public class FeatureTests {
      */
     @Test
     public void testJFRAvailable() {
-        String testJdkHome = System.getenv("TEST_JDK_HOME");
-        if (testJdkHome == null) {
-            throw new AssertionError("TEST_JDK_HOME is not set");
-        }
         boolean shouldBePresent = false;
         if (jdkVersion.isNewerOrEqual(11) || jdkVersion.isNewerOrEqualSameFeature(8, 0, 262)) {
             if (!jdkPlatform.runsOn(OperatingSystem.AIX) || jdkVersion.isNewerOrEqual(20)) {
@@ -210,4 +338,5 @@ public class FeatureTests {
             throw new RuntimeException("Failed to launch JVM", e);
         }
     }
+
 }

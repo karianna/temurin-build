@@ -1,19 +1,17 @@
 #!/bin/bash
 # shellcheck disable=SC1091
-
-################################################################################
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# ********************************************************************************
+# Copyright (c) 2018 Contributors to the Eclipse Foundation
 #
-#      https://www.apache.org/licenses/LICENSE-2.0
+# See the NOTICE file(s) with this work for additional
+# information regarding copyright ownership.
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-################################################################################
+# This program and the accompanying materials are made
+# available under the terms of the Apache Software License 2.0
+# which is available at https://www.apache.org/licenses/LICENSE-2.0.
+#
+# SPDX-License-Identifier: Apache-2.0
+# ********************************************************************************
 
 set -eu
 
@@ -79,38 +77,47 @@ signRelease()
         do
           echo "Signing ${f}"
           if [ "$SIGN_TOOL" = "eclipse" ]; then
-            echo "Signing $f using Eclipse Foundation codesign service"
+           if [ "${VERSION}" = "8" ]; then
             dir=$(dirname "$f")
             file=$(basename "$f")
-            mv "$f" "${dir}/unsigned_${file}"
-            if ! curl --fail --silent --show-error -o "$f" -F file="@${dir}/unsigned_${file}" https://cbi.eclipse.org/authenticode/sign; then
-              echo "curl command failed, sign of $f failed"
+            # Check if file is a Microsoft supplied file that is already signed
+            if [[ "$file" =~ api-ms-win.* ]] || [[ "$file" =~ API-MS-Win.* ]] || [[ "$file" =~ msvcp.* ]] || [[ "$file" =~ ucrtbase.* ]] || [[ "$file" =~ vcruntime.* ]]; then
+              echo "Skipping Microsoft file $file"
+            else
+              echo "Signing $f using Eclipse Foundation codesign service"
+              mv "$f" "${dir}/unsigned_${file}"
+              if ! curl --fail --silent --show-error -o "$f" -F file="@${dir}/unsigned_${file}" https://cbi.eclipse.org/authenticode/sign; then
+                echo "curl command failed, sign of $f failed"
 
-              # Retry up to 20 times
-              max_iterations=20
-              iteration=1
-              success=false 
-              echo "Code Not Signed For File $f"
-              while [ $iteration -le $max_iterations ] && [ $success = false ]; do
-                echo $iteration Of $max_iterations
-                sleep 1
-                if ! curl --fail --silent --show-error -o "$f" -F file="@${dir}/unsigned_${file}" https://cbi.eclipse.org/authenticode/sign; then
-                  echo "curl command failed, $f Failed Signing On Attempt $iteration"
-                  success=false
-                  iteration=$((iteration+1))
-                  if [ $iteration -gt $max_iterations ]
-                  then
-                    echo "Errors Encountered During Signing"
-                    exit 1
+                # Retry up to 20 times
+                max_iterations=20
+                iteration=1
+                success=false 
+                echo "Code Not Signed For File $f"
+                while [ $iteration -le $max_iterations ] && [ $success = false ]; do
+                  echo $iteration Of $max_iterations
+                  sleep 1
+                  if ! curl --fail --silent --show-error -o "$f" -F file="@${dir}/unsigned_${file}" https://cbi.eclipse.org/authenticode/sign; then
+                    echo "curl command failed, $f Failed Signing On Attempt $iteration"
+                    success=false
+                    iteration=$((iteration+1))
+                    if [ $iteration -gt $max_iterations ]
+                    then
+                      echo "Errors Encountered During Signing"
+                      exit 1
+                    fi
+                  else
+                    echo "$f Signed OK On Attempt $iteration"
+                    success=true
                   fi
-                else
-                  echo "$f Signed OK On Attempt $iteration"
-                  success=true
-                fi
-              done
+                done
+              fi
+              chmod --reference="${dir}/unsigned_${file}" "$f"
+              rm -rf "${dir}/unsigned_${file}"
             fi
-            chmod --reference="${dir}/unsigned_${file}" "$f"
-            rm -rf "${dir}/unsigned_${file}"
+           else
+            echo "Eclipse signing for JDK version ${VERSION} does not externally sign Windows executables post-build"
+           fi
           else
             STAMPED=false
             for SERVER in $TIMESTAMPSERVERS; do
@@ -147,7 +154,16 @@ signRelease()
 
       # Sign all files with the executable permission bit set.
 
-      FILES=$(find "${TMP_DIR}" -perm +111 -type f -not -name '.*' -o -name '*.dylib' || find "${TMP_DIR}" -perm /111 -type f -not -name '.*' -o -name '*.dylib')
+      if [ "$SIGN_TOOL" = "eclipse" ] && [ "${VERSION}" != "8" ]; then
+        # On MacOSX, libjli.dylib is copied in two places. Once in Contents/home/lib/libjli.dylib and once in
+        # Contents/MacOS/libjli.dylib. The latter is the bundle executable entry-point and hasn't been signed by
+        # by the build in contrast to content in Contents/home. Therefore,  Eclipse jdk-11+ post-build signing should
+        # only sign the libjli.dylib bundle executable in Contents/MacOS, as there rest are already internally signed
+        # in the build
+        FILES=$(find . -name 'libjli.dylib' | grep 'Contents/MacOS' || true)
+      else
+        FILES=$(find "${TMP_DIR}" -perm +111 -type f -not -name '.*' -o -name '*.dylib' || find "${TMP_DIR}" -perm /111 -type f -not -name '.*' -o -name '*.dylib')
+      fi
       if [ "$FILES" == "" ]; then
         echo "No files to sign"
       elif [ "$SIGN_TOOL" = "eclipse" ]; then

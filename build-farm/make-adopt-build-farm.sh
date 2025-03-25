@@ -1,19 +1,17 @@
 #!/bin/bash
 # shellcheck disable=SC1091
-
-################################################################################
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# ********************************************************************************
+# Copyright (c) 2018 Contributors to the Eclipse Foundation
 #
-#      https://www.apache.org/licenses/LICENSE-2.0
+# See the NOTICE file(s) with this work for additional
+# information regarding copyright ownership.
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-################################################################################
+# This program and the accompanying materials are made
+# available under the terms of the Apache Software License 2.0
+# which is available at https://www.apache.org/licenses/LICENSE-2.0.
+#
+# SPDX-License-Identifier: Apache-2.0
+# ********************************************************************************
 
 set -e
 
@@ -142,8 +140,10 @@ then
   if [ "${JAVA_FEATURE_VERSION}" == "11" ] && [ "${VARIANT}" == "openj9" ]; then
     # OpenJ9 only supports building jdk-11 with jdk-11
     JDK_BOOT_VERSION="11"
-  fi
-  if [ "${JAVA_FEATURE_VERSION}" == "17" ]; then
+  elif [ "${JAVA_FEATURE_VERSION}" == "11" ] && [ "${ARCHITECTURE}" == "riscv64" ]; then
+    # RISC-V isn't supported on (and isn't planned to support) anything before JDK 11
+    JDK_BOOT_VERSION="11"
+  elif [ "${JAVA_FEATURE_VERSION}" == "17" ]; then
     # To support reproducible-builds the jar/jmod --date option is required
     # which is only available in jdk-17 and from jdk-19 so we cannot bootstrap with JDK16
     JDK_BOOT_VERSION="17"
@@ -251,3 +251,15 @@ CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM//\"/temporary
 
 # shellcheck disable=SC2086
 bash -c "$MAC_ROSETTA_PREFIX $PLATFORM_SCRIPT_DIR/../makejdk-any-platform.sh --clean-git-repo --jdk-boot-dir ${JDK_BOOT_DIR} --configure-args \"${CONFIGURE_ARGS_FOR_ANY_PLATFORM}\" --target-file-name ${FILENAME} ${TAG_OPTION} ${OPTIONS} ${BUILD_ARGS} ${VARIANT_ARG} ${JAVA_TO_BUILD}"
+
+# If this is jdk8u on mac x64 that has cross compiled on arm64 we need to restore Xcode from the Xcode-11.7.app to default
+if [[ "${JAVA_TO_BUILD}" == "${JDK8_VERSION}" ]] && [[ -n "$MAC_ROSETTA_PREFIX" ]]; then
+  echo "Restoring Xcode select to /"
+  echo "[WARNING] You may be asked for your su user password, attempting to switch Xcode version to /"
+  sudo xcode-select --switch /
+fi
+
+if [ -d "${WORKSPACE}" ]; then
+  SPACEUSED=$(du -sk "$WORKSPACE")
+  echo "Total disk space in Kb consumed by build process: $SPACEUSED"
+fi
