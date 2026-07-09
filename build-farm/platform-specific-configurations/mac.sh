@@ -32,6 +32,11 @@ if [[ "${MACHINEARCHITECTURE}" == "arm64" ]] && [[ "${ARCHITECTURE}" == "x64" ]]
   export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --openjdk-target=x86_64-apple-darwin"
 fi
 
+# JDK17 requires metal (included in full xcode) as does JDK11 on aarch64
+# JDK11 on x64 is matched for consistency
+# JDK8 uses the same Xcode as of 2026.
+XCODE_SWITCH_PATH="/Applications/Xcode.app"
+
 if [ "${JAVA_TO_BUILD}" == "${JDK8_VERSION}" ]
 then
   export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --with-toolchain-type=clang"
@@ -39,19 +44,12 @@ then
     # Cross compilation config needed only for jdk8
     export MAC_ROSETTA_PREFIX="arch -x86_64"
     export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH
-    XCODE_SWITCH_PATH="/Applications/Xcode-11.7.app"
-  else
-    XCODE_SWITCH_PATH="/Applications/Xcode.app"
   fi
   if [ "${VARIANT}" == "${BUILD_VARIANT_OPENJ9}" ]; then
     export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --with-openssl=fetched --enable-openssl-bundling"
-    export BUILD_ARGS="${BUILD_ARGS} --skip-freetype"
   fi
 else
   if [[ "$JAVA_FEATURE_VERSION" -ge 11 ]]; then
-    # JDK17 requires metal (included in full xcode) as does JDK11 on aarch64
-    # JDK11 on x64 is matched for consistency
-    XCODE_SWITCH_PATH="/Applications/Xcode.app"
     # JDK11 (x86 and aarch) has excessive warnings.
     # This is due to a harfbuzz fix which is pending backport.
     # Suppressing the warnings for now to aid triage.
@@ -67,24 +65,33 @@ else
   if [ "${VARIANT}" == "${BUILD_VARIANT_OPENJ9}" ]; then
     export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --with-openssl=fetched --enable-openssl-bundling"
   else
-    if [ "${ARCHITECTURE}" == "x64" ]; then
-      # We can only target 10.9 on intel macs
-      export cxx_flags_bucket="${cxx_flags_bucket} -mmacosx-version-min=10.9"
-    elif [[ "${MACHINEARCHITECTURE}" == "x64" ]] && [[ "${ARCHITECTURE}" == "aarch64" ]]; then
+    if [[ "${MACHINEARCHITECTURE}" == "x64" ]] && [[ "${ARCHITECTURE}" == "aarch64" ]]; then
       export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --openjdk-target=aarch64-apple-darwin"
     fi
   fi
 fi
 
-if [[ "$JAVA_FEATURE_VERSION" -ge 21 ]]; then
-  # jdk-21+ uses "bundled" FreeType
-  export BUILD_ARGS="${BUILD_ARGS} --freetype-dir bundled"
-fi
-
 # The configure option '--with-macosx-codesign-identity' is supported in JDK8 OpenJ9 and JDK11 and JDK14+
 if [[ ( "$JAVA_FEATURE_VERSION" -eq 11 ) || ( "$JAVA_FEATURE_VERSION" -ge 14 ) ]]
 then
-  export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --with-sysroot=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/"
+  sysrootSDK="/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
+
+  # Always use the selected Xcode default SDK to match the Xcode version being used if possible, this ensures "reproducible builds"
+  if [[ -d "${XCODE_SWITCH_PATH}/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk" ]]; then
+    sysrootSDK="${XCODE_SWITCH_PATH}/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+    echo "Configuring build sysroot to use the Xcode SDK: ${sysrootSDK}"
+  else
+    echo "Warning: No 'MacOSX.sdk' found within the selected Xcode: ${XCODE_SWITCH_PATH}/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs"
+    echo "Warning: Configuring build sysroot to use the system CommandLineTools SDK: ${sysrootSDK}"
+  fi
+
+  echo "MacOSX.sdk version for : ${sysrootSDK}"
+  echo "========================"
+  plutil -p "${sysrootSDK}/SDKSettings.plist" | grep '"Version"'
+  echo "========================"
+
+  export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --with-sysroot=${sysrootSDK}"
+
   ## Login to KeyChain
   ## shellcheck disable=SC2046
   ## shellcheck disable=SC2006
@@ -97,6 +104,11 @@ fi
 
 echo "[WARNING] You may be asked for your su user password, attempting to switch Xcode version to ${XCODE_SWITCH_PATH}"
 sudo xcode-select --switch "${XCODE_SWITCH_PATH}"
+
+# If using Xcode >= 15 for jdk-21+, then Apple have introduced linker option -reproducible, to enable reproducible dylib's
+if [ "$JAVA_FEATURE_VERSION" -ge 21 ] && [ "$(xcodebuild -version | grep 'Xcode' | awk '{print $2}' | cut -d. -f1)" -ge 15 ]; then
+  export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --with-extra-ldflags=-Wl,-reproducible"
+fi
 
 # No MacOS builds available of OpenJDK 7, OpenJDK 8 can boot itself just fine.
 if [ "${JDK_BOOT_VERSION}" == "7" ]; then

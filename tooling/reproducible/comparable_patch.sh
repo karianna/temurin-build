@@ -314,13 +314,13 @@ elif [[ "$OS" =~ Linux* ]]; then
   echo "On Linux"
 elif [[ "$OS" =~ Darwin* ]]; then
   echo "On MacOS"
-  JDK_DIR="${JDK_DIR}/Contents/Home"
 else
   echo "Do not recognise OS: $OS"
   exit 1
 fi
 
-expandJDK "$JDK_DIR" "$OS"
+cp -R "${JDK_DIR}" "${JDK_DIR}_CP"
+expandJDK "$JDK_DIR" "$OS" "${JDK_DIR}_CP"
 
 echo "Removing all Signatures from ${JDK_DIR} in a deterministic way"
 
@@ -353,11 +353,11 @@ if [[ "$OS" =~ CYGWIN* ]] || [[ "$OS" =~ Darwin* ]]; then
 fi
 
 if [[ "$OS" =~ CYGWIN* ]]; then
-  removeWindowsNonComparableData
+  removeWindowsNonComparableData "${JDK_DIR}"
 fi
 
 if [[ "$OS" =~ Darwin* ]]; then
-  removeMacOSNonComparableData
+  removeMacOSNonComparableData "${JDK_DIR}"
 fi
 
 removeVendorName

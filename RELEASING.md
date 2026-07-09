@@ -44,7 +44,16 @@ During the week before release, the Release Champion makes changes in preparatio
 
 Post the below message to the #build & #release channels in Slack:
 
-`In Preparation for next weeks release, I'm proposing to branch the following repositories, in order that this branch becomes the baseline for the release. Shout now if you need to get any PRs merged for the release, as today is the last day, the following repositories will be branched: ( temurin-build, ci-jenkins-pipelines, jenkins-helper).`
+```text
+I'm proposing to branch the following repositories tomorrow:
+- temurin-build
+- ci-jenkins-pipelines
+- jenkins-helper
+
+These branches will be the baseline for the approaching release.
+
+Shout now if you need to get any PRs merged for the release.
+```
 
 #### Create release branch on below repositories:
 
@@ -149,9 +158,9 @@ flowchart TD
 
 </details>
 
-Scheduled pipeline Testing is automatically disabled from the Saturday prior to "release Tuesday", to the Sunday after, see: https://github.com/adoptium/ci-jenkins-pipelines/blob/5bd79eb1d95a033c4ee364a8f9fcc270ad653178/pipelines/build/common/trigger_beta_build.groovy#L51
+Scheduled pipelines have testing disabled from the Saturday prior to "release Tuesday", to the Sunday after, see: https://github.com/adoptium/ci-jenkins-pipelines/blob/5bd79eb1d95a033c4ee364a8f9fcc270ad653178/pipelines/build/common/trigger_beta_build.groovy#L51
 
-Add a banner to the website to indicate that the releases are coming in the near future ([Example Changes](https://github.com/adoptium/adoptium.net/blob/main/src/components/Banner.tsx)).
+Add a banner to the website to indicate that the releases are coming in the near future ([Example Change](https://github.com/adoptium/adoptium.net/pull/192/files#diff-6b08211ad4b7a58e27314a896bfb15679d0c3fb026b512ce562b434a02ec4f7a)).
 
 ### Steps for every version
 
@@ -211,6 +220,9 @@ It is recommended that we perform an auto trigger test on at least two of the re
 5. Determine the **"latest"** upstream OpenJDK tag for the dry-runs
 6. Get an Adoptium administrator to create the `-dryrun-ga` tag in the adoptium mirror, as in the following example:
 
+<details>
+<summary>Details of how to tag the JDK repositories for the dry-runs</summary>
+
 <!-- markdownlint-disable-next-line MD036 -->
 **IMPORTANT: dryrun tag MUST be something that is sorted before `-ga`. Always use format: "-dryrun-ga"**
 
@@ -240,19 +252,24 @@ git tag -a "jdk-23-dryrun-ga" jdk-23+37^{} -m"YYYY.MM release dry run test"
 git push --tags origin jdk23
 ```
 
+</details>
+
 7. Wait for the release trigger job to detect the tag (wait up to 10mins), e.g. [releaseTrigger_jdk17u](https://ci.adoptium.net/job/build-scripts/job/utils/job/releaseTrigger_jdk17u) (Note that the schedule for that job is only run on the release months, so may not work if you are keen and try to do this in the month before)
 8. The trial release pipeline job should now be running, eg: https://ci.adoptium.net/job/build-scripts/job/release-openjdk17-pipeline/
 9. Ensure the build, aqa-tests and jck tests are run and triaged successfully.
 10. Once you have verified that everything looks good, testenv.properties should be adjusted to remove "-dryrun" before the final release tags appear.
 
-If the tag in step 5 MUST NOT contain the +nn from the underlying tag.
+The tag in step 6 MUST NOT contain the +nn from the underlying tag.
 If you accidentally create a +nn-dryrun-ga then you will get this error from
 openjdk_pipeline.groovy:
 
 `[INFO] Resolved jdk-17.0.11-dryrun-ga to upstream build tag jdk-17.0.11+6jdk-17.0.11+6-dryrun-ga`
 `[ERROR] scmReference does not match with any JDK branch in testenv.properties in aqa-tests release branch. Please update aqa-tests v1.0.1-release release branch. Set the current build result to FAILURE!`
 
-Deleting the tag will not fix the problem as it will have been cached on the jenkins worker node used for the trigger jobs - see https://github.com/adoptium/temurin/issues/28#issuecomment-2041364554 for the details, but you'll need to manually adjust build-scripts/utils/./releaseTrigger_jdk*/workspace/tracking
+<details>
+<summary>Deleting the tag will not fix the problem as it will have been cached on the jenkins worker node</summary>
+
+The details of this problem is in https://github.com/adoptium/temurin/issues/28#issuecomment-2041364554 but TL;DR you will need to manually adjust build-scripts/utils/./releaseTrigger_jdk*/workspace/tracking
 
 If the git-skara-jdkXXu job in https://ci.adoptium.net/view/git-mirrors/job/git-mirrors/job/adoptium/ gets confused with the dryrun tag, for example
 
@@ -289,6 +306,8 @@ Below is an example of how the releaseTrigger job may get confused if you have p
   - The `jdk-23.0.2-dryrun-ga` tag has been pushed manually, using [step 6](https://github.com/adoptium/temurin-build/blob/master/RELEASING.md#dry-run-tests-do-this-at-least-1-week-before-release-in-the-same-calendar-month), and this tag has the same commit sha as `jdk-23.0.2+00`, `9101cc1`. All is well, the releaseTrigger job should have no problem.
 - **However**, the presence of the 4th tag, `jdk-23.0.1-dryrun-ga` will confuse the releaseTrigger job because it shares the same commit sha as `jdk-23.0.2+00`. `jdk-23.0.1-dryrun-ga` is an example of a tag that was pushed **incorrectly** so it needs to be deleted to avoid confusion in the releaseTrigger job.
 
+</details>
+
 <details>
 <summary>Manual execution of the build pipelines (without using trigger jobs - now mostly obsolete other than jdk8u/arm32)</summary>
 
@@ -319,9 +338,9 @@ Here are the old manual steps:
 
 </details>
 
-### After build pipeline finished
+### After the build pipeline is finished
 
-Once the openjdk pipeline has completed:
+Once the OpenJDK pipeline has completed:
 
 1. Triage TRSS result:
 
@@ -336,32 +355,70 @@ Once the openjdk pipeline has completed:
 - Discuss failing tests with [Shelley Lambert](https://github.com/smlambert) or post on testing-aqavit Slack channel
 - Once all AQA tests on all platforms and all JDK versions have been signed off, then nightly tests can be re-enabled. See the notes on "Disable nightly testing".
 
+### The week of the GA, after dry-runs are complete
+
+A further check should be performed to see if the cacerts have been updated
+in the repository since the build repositories were branched. Check for the
+[automated PRs in temurin-build]. If required; cherry pick across to the
+temurin-build release branch so that [the latest ones at GA time] are used
+for the release. Make sure this gets merged before the GA builds trigger.
+
+[automated PRs in temurin-build]: https://github.com/adoptium/temurin-build/pulls?q=is%3Apr+%22update+ca+certs%22
+[the latest ones at GA time]: https://github.com/adoptium/temurin-build/issues/4141
+
+### At GA time
+
+The builds should kick off automatically and then you follow the same
+processes as for the dry-run up to this point to get the builds diagnosed
+and triaged as per step 1 in the previous section. Then:
+
 2. Publish build results:
 
-- If "good to publish", get permission to publish the release from the Adoptium PMC members, discussion is via the Adoptium [#release](https://adoptium.slack.com/messages/CLCFNV2JG) Slack channel.
-- Once permission has been obtained, run the [openjdk_release_tool](https://ci.adoptium.net/job/build-scripts/job/release/job/refactor_openjdk_release_tool/) to publish the releases to GitHub (restricted access - if you can't see this link, you don't have access). It is *strongly recommended* that you run first with the `DRY_RUN` checkbox enabled and check the output to verify that the correct list of files you expected are picked up.
+- If "good to publish", complete these steps in order:
+  - Step 1) **Get publish approval from the PMC** once no blocking failures exist.
+    - Example: Post this in [#release] and wait for 2 \"+1\" emotes from the PMC:
+    - \@pmc - Permission to publish \<architecture\> \<OS\>
+  - Step 2) **Publish the release** by following the RELEASE links in the pipeline url.
+    - Note: If you cannot see/follow said links (which launch [refactor_openjdk_release_tool]), you don't have access.
+  - Step 3) **Notify the community** by copying the link into the thread from Step 1.
+  - Step 4) **Confirm that the job passed.**
 
-  -- `TAG`: (GitHub binaries published name)  e.g. `jdk-11.0.5+9`. If doing a point release, add that into the name e.g. for a `.3` release use something like this: `jdk8u232-b09.3`
-  -- `VERSION`: (select version e.g. `jdk11`)
-  -- `UPSTREAM_JOB_NAME`: e.g "build-scripts/release-openjdkXX-pipeline" for new way and "build-scripts/openjdkXX-pipeline" for old way
-  -- `UPSTREAM_JOB_NUMBER`: the build number of above upstream job, e.g. 86
-  -- `RELEASE`: "ticked"
-  -- If you need to restrict the platforms or only ship jdks or jres, either use `ARTIFACTS_TO_COPY` e.g. `**/*jdk*mac*` or add an explicit exclusion in `ARTIFACTS_TO_SKIP` e.g. `**/*mac*`. These may be required if you had to re-run some of the platforms under a different pipeline earlier in the process. If you're unsure what the possible names are, look at the artifacts of the appropriate `openjdkNN-pipeline` job. If you are shipping x64_linux ensure that you include the `sources` tar.gz files with the corresponding checksum and json file.
-  -- `ARTIFACTS_TO_SKIP`: `**/*testimage*`
-  -- If you need to restrict the platforms, fill in `ARTIFACTS_TO_COPY` and if needed add to `ARTIFACTS_TO_SKIP`. This may also be required if you had to re-run some of the platforms under a different pipeline earlier in the process. I personally tend to find it cleaner to release Linux in one pipeline, Windows+Mac in another, then the others together to keep the patterns simpler. Sample values for `ARTIFACTS_TO_COPY` are as follows (use e.g. `_x64_linux_` to restrict by architecture if required):
-    --- `**/*_linux_*.tar.gz,**/*_linux_*.sha256.txt,**/*_linux_*.json,**/*_linux_*.sig` (Exclude `**/*alpine_linux*` if you don't really want that to be picked up too)
-    --- Alternative that wouldn't pick up Alpine: `target/linux/x64/hotspot/**.tar.gz,target/linux/x64/hotspot/target/linux/x64/hotspot/*.sha256.txt`
-    --- `**/*_mac_*.tar.gz,**/*_mac_*.sha256.txt,**/*_mac_*.json,**/*_mac_*.pkg,**/*_mac_*.sig`
-    --- `**/*_windows_*.zip,**/*_windows_*.sha256.txt,**/*_windows_*.json,**/*_windows_*.msi,**/*_windows_*.sig`
-    --- `**/*_aix_*.tar.gz,**/*_aix_*.sha256.txt,**/*_aix_*.json,**/*_aix_*.sig`
-    --- `**/*_solaris_*.tar.gz,**/*_solaris_*.sha256.txt,**/*_solaris_*.json,**/*_solaris_*.sig`
-  --  Click "Build" button !!!
+[#release]: https://adoptium.slack.com/messages/CLCFNV2JG
+[refactor_openjdk_release_tool]: https://ci.adoptium.net/job/build-scripts/job/release/job/refactor_openjdk_release_tool/
+
+<details>
+<summary>Manual instructions for running the release tool</summary>
+
+Since we now provide the dry-run links, doing it manually is typically not
+required, but this information on the parameters is here if you need it:
+
+- `TAG`: (GitHub binaries published name)  e.g. `jdk-11.0.5+9`. If doing a point release, add that into the name e.g. for a `.3` release use something like this: `jdk8u232-b09.3`
+- `VERSION`: (select version e.g. `jdk11`)
+- `UPSTREAM_JOB_NAME`: e.g "build-scripts/release-openjdkXX-pipeline" for new way and "build-scripts/openjdkXX-pipeline" for old way
+- `UPSTREAM_JOB_NUMBER`: the build number of above upstream job, e.g. 86
+- `RELEASE`: "ticked"
+- If you need to restrict the platforms or only ship jdks or jres, either use `ARTIFACTS_TO_COPY` e.g. `**/*jdk*mac*` or add an explicit exclusion in `ARTIFACTS_TO_SKIP` e.g. `**/*mac*`. These may be required if you had to re-run some of the platforms under a different pipeline earlier in the process. If you're unsure what the possible names are, look at the artifacts of the appropriate `openjdkNN-pipeline` job. If you are shipping x64_linux ensure that you include the `sources` tar.gz files with the corresponding checksum and json file.
+- `ARTIFACTS_TO_SKIP`: `**/*testimage*`
+- If you need to restrict the platforms, fill in `ARTIFACTS_TO_COPY` and if needed add to `ARTIFACTS_TO_SKIP`. This may also be required if you had to re-run some of the platforms under a different pipeline earlier in the process. I personally tend to find it cleaner to release Linux in one pipeline, Windows+Mac in another, then the others together to keep the patterns simpler. Sample values for `ARTIFACTS_TO_COPY` are as follows (use e.g. `_x64_linux_` to restrict by architecture if required):
+  - `**/*_linux_*.tar.gz,**/*_linux_*.sha256.txt,**/*_linux_*.json,**/*_linux_*.sig` (Exclude `**/*alpine_linux*` if you don't really want that to be picked up too)
+  - Alternative that wouldn't pick up Alpine: `target/linux/x64/hotspot/**.tar.gz,target/linux/x64/hotspot/target/linux/x64/hotspot/*.sha256.txt`
+  - `**/*_mac_*.tar.gz,**/*_mac_*.sha256.txt,**/*_mac_*.json,**/*_mac_*.pkg,**/*_mac_*.sig`
+  - `**/*_windows_*.zip,**/*_windows_*.sha256.txt,**/*_windows_*.json,**/*_windows_*.msi,**/*_windows_*.sig`
+  - `**/*_aix_*.tar.gz,**/*_aix_*.sha256.txt,**/*_aix_*.json,**/*_aix_*.sig`
+  - `**/*_solaris_*.tar.gz,**/*_solaris_*.sha256.txt,**/*_solaris_*.json,**/*_solaris_*.sig`
+- Click "Build" button !!!
+
+</details>
+
 - Once the job completes successfully, check the binaries have uploaded to GitHub at somewhere like <https://github.com/adoptium/temurin8-binaries/releases/tag/jdk8u302-b08>
 - Within 15 minutes the binaries should be available on the website too. e.g. <https://adoptium.net/?variant=openjdk11&jvmVariant=hotspot> (NOTE: If it doesn't show up, check whether the API is returning the right thing (e.g. with a link such as [this](https://api.adoptium.net/v3/assets/feature_releases/17/ga?architecture=x64&heap_size=normal&image_type=jre&jvm_impl=hotspot&os=linux&page=0&page_size=10&project=jdk&sort_method=DEFAULT&sort_order=DESC&vendor=eclipse), and that the `.json` metadata files are uploaded correctly)
 - During the waiting time, good to update:
-
-  -- <https://github.com/adoptium/website-v2/blob/main/src/asciidoc-pages/support.adoc> which is the source of <https://adoptium.net/support> ([Sample change](https://github.com/adoptium/website-v2/pull/1105))
-  -- (if required) the supported platforms table at <https://github.com/adoptium/website-v2/edit/main/src/asciidoc-pages/supported-platforms.adoc> which is the source of <https://adoptium.net/supported-platforms>
+  - [support.adoc](https://github.com/adoptium/website-v2/blob/main/src/asciidoc-pages/support.adoc), which is the source of [https://adoptium.net/support] ([example](https://github.com/adoptium/website-v2/pull/1105)).
+  - The supported platforms table ([source](https://github.com/adoptium/adoptium.net/blob/main/src/data/supported-platforms.json)), which is the source of [https://adoptium.net/supported-platforms].
+    - Note: If this involves adding a new JDK version, alter the relevant JDK major versions (e.g. 23 to 24) in the following files:
+      - [page.test.tsx](https://github.com/adoptium/adoptium.net/blob/main/src/app/%5Blocale%5D/temurin/nightly/__tests__/page.test.tsx)
+      - [page.test.tsx.snap](https://github.com/adoptium/adoptium.net/blob/main/src/app/%5Blocale%5D/supported-platforms/__tests__/__snapshots__/page.test.tsx.snap)
+      - [page.test.tsx.snap (different file, same name)](https://github.com/adoptium/adoptium.net/blob/main/src/app/%5Blocale%5D/temurin/nightly/__tests__/__snapshots__/page.test.tsx.snap)
 
 3. Publish AQA test results:
 
@@ -372,23 +429,31 @@ Once all supported platform binaries have been released it's time to publish AQA
 
 4. Publish packages for different OS
 
-  4.1. **[Mac only]** Once the binaries are available on the website you need to update the Homebrew casks. There are 4 casks in total
-and all but the first one is in the `hombrew-cask-versions` repository. If you're doing a point release, the format of the version string is 11.0.20.1,1 so the version is always the same as "our" one but with the `+` replaced with a `,`
+  4.1. **[Mac only]**
+
+  4.1.1. **Homebrew - Summary**
+  Homebrew casks should be automatically generated and uploaded here (where XX is the jdk major version):
+  https://github.com/Homebrew/homebrew-cask/blob/master/Casks/t/temurin@XX.rb
+
+  4.1.2. **Homebrew - Details**
+  Once the binaries are available on the website there is now [automation upstream](https://github.com/Homebrew/homebrew-cask/commits/main/.github/workflows/autobump.yml) as of [June 2025](https://github.com/Homebrew/brew/pull/20117) which updates the Homebrew casks under the `BrewTestBot` ID - this automation should be checked to ensure it has run. Noting that for point releases (not tested with the automated PRs), the format of the version string should be 11.0.20.1,1 so the version is always the same as "our" one but with the `+` replaced with a `,`
 
 - [`temurin`](https://github.com/Homebrew/homebrew-cask/blob/master/Casks/t/temurin.rb) which always serves the latest release version
-- [`temurin8`](https://github.com/Homebrew/homebrew-cask-versions/blob/master/Casks/temurin8.rb)
-- [`temurin11`](https://github.com/Homebrew/homebrew-cask-versions/blob/master/Casks/temurin11.rb)
-- [`temurin17`](https://github.com/Homebrew/homebrew-cask-versions/blob/master/Casks/temurin17.rb)
+- [`temurin8`](https://github.com/Homebrew/homebrew-cask/blob/master/Casks/t/temurin@8.rb)
+- [`temurin11`](https://github.com/Homebrew/homebrew-cask/blob/master/Casks/t/temurin@11.rb)
+- [`temurin17`](https://github.com/Homebrew/homebrew-cask/blob/master/Casks/t/temurin@17.rb)
+- [`temurin21`](https://github.com/Homebrew/homebrew-cask/blob/master/Casks/t/temurin@21.rb)
+- [`temurin25`](https://github.com/Homebrew/homebrew-cask/blob/master/Casks/t/temurin@25.rb) - Note: This link will only work after April 2026 release.
 
-An example PR can be found [here](https://github.com/Homebrew/homebrew-cask-versions/pull/17582/files). The required SHA sums can be updated by `brew bump-cask-pr temurinXX --version 11.0.XX,Y` command if you're on a macos system, or manually if not . The separate pull request is required for each version you update. If in doubt reach out to @gdams as he's a maintainer.
+  4.2. **[Linux only]** Once the binaries are available on the website the
+     building and publishing of the Linux rpm/deb/apk files will occur to the
+     yum/apt repositories automatically - triggered by the
+     refactor_openjdk_release_tool job. Check that the appropriate
+     [create_installer_linux](https://ci.adoptium.net/job/build-scripts/job/release/job/create_installer_linux/)
+     jobs has run with a green status and re-run if not. Noting that there
+     will be runs of that job triggered for non-Linux systems which will be
+     listed as `UNSUPPORTED_DISTRO/UNSUPPORTED_ARCH` - these can be ignored.
 
-  4.2. **[Linux only]** Once the binaries are available on the website you can begin updating the specfiles for the RPM/DEB/APK files. There are 4 different types of linux installer
-
-- [debian](https://github.com/adoptium/installer/tree/master/linux/jdk/debian/src/main/packaging/temurin)
-- [Red Hat](https://github.com/adoptium/installer/tree/master/linux/jdk/redhat/src/main/packaging/temurin)
-- [SuSE](https://github.com/adoptium/installer/tree/master/linux/jdk/suse/src/main/packaging/temurin)
-- [Alpine](https://github.com/adoptium/installer/tree/master/linux/jdk/alpine/src/main/packaging/temurin)
-  
   All need to be updated:
 
   - **Debian** you need to locate the `rules` file for each version. This file contains the URLs and Checksums for each package ([example](https://github.com/adoptium/installer/blob/master/linux/jdk/debian/src/main/packaging/temurin/11/debian/rules#L6-L15)). The `changelog` file should also be updated for the new version.
@@ -399,7 +464,7 @@ Once the PRs to change those files have been merged, the [adoptium-packages-linu
 
 5. **[Docker Hub]** The information on updating the Adoptium official dockerhub repository is at <https://github.com/adoptium/containers#maintenance-of-dockerfiles> at the moment you cannot do this until all Linux architectures and windows64 are published for the appropriate version
 
-6. Once everything has been published to GitHub, use the [EclipseMirror](https://ci.eclipse.org/temurin-compliance/job/EclipseMirror/) job to mirror the artifacts to our Eclipse server for backup purposes. Note that this will need to be done by a team member in the temurin-compliance project (Run once for each of the releases)
+6. Once everything has been published to GitHub, use (a) the [EclipseMirror](https://ci.eclipse.org/temurin-compliance/job/EclipseMirror/) job to mirror the artifacts to our Eclipse server for backup purposes. Note that this will need to be done by a team member in the temurin-compliance project (Run once for each of the releases) and (b) run the [download_and_sbom_validator](https://ci.adoptium.net/job/build-scripts/job/release/job/download_and_sbom_validation) job to check the downloads and corresponding SBOMs are ok.
 
 7. Publicise the Temurin release:
 
@@ -428,29 +493,45 @@ For the api.adoptium.net repository:
 - Eventually after rampdown and final phase testing the GA build is tagged and released, e.g. the `jdk-23-ga` code level is tagged along side the actual release build tag.
 - When a new release occurs, we must also update one of our job generators to match the new jdk versions and remove old versions that are no longer needed. The full details on what these are in the [regeneration README.md](https://github.com/adoptium/ci-jenkins-pipelines/blob/master/pipelines/build/regeneration/README.md) but for a quick run down on how to update them when we want to build a new release, follow the steps below:
 
-  1. Update the Job Folder - <https://ci.adoptium.net/job/build-scripts/job/utils/>: The jobs themselves you are looking for are called `pipeline_jobs_generator_jdkxx` (`pipeline_jobs_generator_jdk` for HEAD). Firstly, ensure that the job description of each generator (and it's parameter's descriptions) are up to date. Then, follow these steps:
-  
-  - If you are ADDING a JDK version:
-    - Ensure that JDK N-1 is available as build JDK on the builders. For example in order to build JDK 15, JDK 14 needs to be installed on the build machines. As a temporary measure, [code](./build-farm/platform-specific-configurations/linux.sh#L110) so as to download the JDK to the builder via the API has been added. NOTE: For the transition period shortly after a new JDK has been branched, there might not yet exist a generally available release of JDK N-1.
-    - Ensure that JDK sources are being mirrored. Example [infrastructure request](https://github.com/AdoptOpenJDK/openjdk-infrastructure/issues/1096)
-    - Ensure that a repository which contains the binary releases exists. Example [temurin23-binaries](https://github.com/adoptium/temurin23-binaries), if not then create using OtterDog <https://github.com/adoptium/.eclipsefdn/blob/68e1a3c84a7f51e538ab0cbc8a6b5d3428028c37/otterdog/adoptium.jsonnet#L753>:
-    - Regenerate build jobs:
-      - Create a New Item in the folder linked above that copies the `pipeline_jobs_generator_jdk` job. Call it `pipeline_jobs_generator_jdk<new-version-number>`.
-      - Change the `Script Path` setting of the new job to `pipelines/build/regeneration/jdk<new-version-number>_regeneration_pipeline.groovy`. Don't worry if this currently doesn't exist in this repository, you'll add it in step 3.
-      - Update the `Script Path` setting of the JDK-HEAD job (`pipeline_jobs_generator_jdk`) to whatever the new JDK HEAD is. I.e. if the new head is JDK23, change `Script Path` to `pipelines/build/regeneration/jdk23_regeneration_pipeline.groovy`
-  - If you are REMOVING a JDK version:
-    - Delete the job `pipeline_jobs_generator_jdk<version-you-want-to-delete>`
+Important note: Every reference to pipeline_jobs_generator_jdkxx also applies to release_pipeline_jobs_generator_jdkxx
 
-  2. Create the new build configurations for the release - <https://github.com/adoptium/ci-jenkins-pipelines/tree/master/pipelines/jobs/configurations>:
-
-  - Create a new `jdk<new-version-number>_pipeline_config.groovy` file with the desired `buildConfigurations` for the new pipeline. 99% of the time, copy and pasting the configs from the previous version is acceptable. Ensure that the classname and instance of it is changed to `Config<new-version-number>`. Don't remove any old version configs.
-  - Furthermore, you will also need to create another config file to state what jobs will be run with any new versions. If it doesn't currently exist, add a `jdkxx.groovy` file to [configurations/](https://github.com/adoptium/ci-jenkins-pipelines/tree/master/pipelines/jobs/configurations). [Example on how to do this](https://github.com/adoptium/temurin-build/pull/1815/files). Note, some files will need to be named `jdkxxu.groovy` depending on whether the version is maintained in an update repository or not. These will be the ONLY os/archs/variants that are regenerated using the job regenerators as described in the [regeneration readme](https://github.com/adoptium/ci-jenkins-pipelines/blob/master/pipelines/build/regeneration/README.md).
+1. Update the Job Folder - <https://ci.adoptium.net/job/build-scripts/job/utils/>: The jobs themselves you are looking for are called `pipeline_jobs_generator_jdkxx` (`pipeline_jobs_generator_jdk` for HEAD). Firstly, ensure that the job description of each generator (and it's parameter's descriptions) are up to date. Then, follow these steps:
   
-  3. Add new versions to the releaseVersions: https://github.com/adoptium/ci-jenkins-pipelines/blob/d9429d510fecd3c5435c8b048eb899f5726afa85/pipelines/build/regeneration/release_pipeline_generator.groovy#L10
-  
-  4. Build the `pipeline_jobs_generator` that you just made. Ensure the equivalent `openjdkxx_pipeline` to the generator exists or this will fail. If the job fails or is unstable, search the console log for `WARNING` or `ERROR` messages for why. Once it has completed successfully, the [pipeline](https://ci.adoptium.net/job/build-scripts/) is ready to go!
+- If you are ADDING a JDK version:
+  - Ensure that JDK N-1 is available as build JDK on the builders. For example in order to build JDK 15, JDK 14 needs to be installed on the build machines. As a temporary measure, [code](./build-farm/platform-specific-configurations/linux.sh#L110) so as to download the JDK to the builder via the API has been added. NOTE: For the transition period shortly after a new JDK has been branched, there might not yet exist a generally available release of JDK N-1.
+  - Ensure that JDK sources are being mirrored. Example [infrastructure request](https://github.com/AdoptOpenJDK/openjdk-infrastructure/issues/1096)
+  - Ensure that a repository which contains the binary releases exists. Example [temurin23-binaries](https://github.com/adoptium/temurin23-binaries), if not then create using [OtterDog](https://github.com/adoptium/.eclipsefdn/blob/68e1a3c84a7f51e538ab0cbc8a6b5d3428028c37/otterdog/adoptium.jsonnet#L753).
+  - Regenerate build jobs:
+    - Create a New Item in the folder linked above that copies the `pipeline_jobs_generator_jdk` job. Call it `pipeline_jobs_generator_jdk<new-version-number>`.
+    - Change the `Script Path` setting of the new job to `pipelines/build/regeneration/jdk<new-version-number>_regeneration_pipeline.groovy`. Don't worry if this currently doesn't exist in this repository, you'll add it in step 3.
+    - Update the `Script Path` setting of the JDK-HEAD job (`pipeline_jobs_generator_jdk`) to whatever the new JDK HEAD is. I.e. if the new head is JDK23, change `Script Path` to `pipelines/build/regeneration/jdk23_regeneration_pipeline.groovy`
+- If you are REMOVING a JDK version:
+  - Delete the job `pipeline_jobs_generator_jdk<version-you-want-to-delete>`
 
-  5. Update the view for the [build and test pipeline calendar](https://ci.adoptium.net/view/Build%20and%20Test%20Pipeline%20Calendar) to include the new version.
+2. Create the new build configurations for the release - <https://github.com/adoptium/ci-jenkins-pipelines/tree/master/pipelines/jobs/configurations>:
+
+- Create a new `jdk<new-version-number>_pipeline_config.groovy` file with the desired `buildConfigurations` for the new pipeline. 99% of the time, copy and pasting the configs from the previous version is acceptable. Ensure that the classname and instance of it is changed to `Config<new-version-number>`. Don't remove any old version configs.
+- Furthermore, you will also need to create another config file to state what jobs will be run with any new versions. If it doesn't currently exist, add a `jdkxx.groovy` file to [configurations/](https://github.com/adoptium/ci-jenkins-pipelines/tree/master/pipelines/jobs/configurations). [Example on how to do this](https://github.com/adoptium/temurin-build/pull/1815/files). Note, some files will need to be named `jdkxxu.groovy` depending on whether the version is maintained in an update repository or not. These will be the ONLY os/archs/variants that are regenerated using the job regenerators as described in the [regeneration readme](https://github.com/adoptium/ci-jenkins-pipelines/blob/master/pipelines/build/regeneration/README.md).
+
+3. Add new versions to the releaseVersions: https://github.com/adoptium/ci-jenkins-pipelines/blob/d9429d510fecd3c5435c8b048eb899f5726afa85/pipelines/build/regeneration/release_pipeline_generator.groovy#L10
+  
+4. Build the `pipeline_jobs_generator` that you just made. Ensure the equivalent `openjdkxx_pipeline` to the generator exists or this will fail. If the job fails or is unstable, search the console log for `WARNING` or `ERROR` messages for why. Once it has completed successfully, the [pipeline](https://ci.adoptium.net/job/build-scripts/) is ready to go!
+
+5. Update the view for the [build and test pipeline calendar](https://ci.adoptium.net/view/Build%20and%20Test%20Pipeline%20Calendar) to include the new version.
+
+6. Create a new releaseTrigger job for the new jdk major version, using the existing jobs as a guide.
+
+7. Various other updates:
+
+- If you are ADDING a JDK version:
+  - Add the feature (LTS) or tip (STS) release to the job config for [nightlyBuildAndTestStats_temurin](https://ci.adoptium.net/job/nightlyBuildAndTestStats_temurin).
+  - Add the JDK major version to the [build triage git workflow](https://github.com/adoptium/temurin-build/blob/f701dc3e14ee91f0c2539ee13a4ed0394e422123/.github/workflows/build-autotriage.yml#L40).
+- If you are REMOVING a JDK version:
+  - jdkxx.groovy: Remove/comment-out any lines that begin with "triggerSchedule"
+  - jdkxx.groovy: add this code to the bottom, before the "return this" line: disableJob = true
+  - nightly_build_and_test_stats: Add the JDK major version to the retiredVersions array
+  - Update the [nightlyBuildAndTestStats_temurin](https://ci.adoptium.net/job/nightlyBuildAndTestStats_temurin) job configuration to remove the feature (LTS) or tip (STS) release.
+  - Update the [build triage git workflow](https://github.com/adoptium/temurin-build/blob/f701dc3e14ee91f0c2539ee13a4ed0394e422123/.github/workflows/build-autotriage.yml#L40) to remove the JDK version.
 
 ### Update Repository (jdkXXu)
 

@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2001,SC2086,SC2129
 # ********************************************************************************
 # Copyright (c) 2024 Contributors to the Eclipse Foundation
 #
@@ -16,27 +17,71 @@
 # and then compares with the Temurin JDK for the same build version, or the optionally supplied TARBALL_URL.
 # Requires Cygwin & Powershell Installed On Windows To Run
 
+# Shellcheck SC2001 & SC2006 disable added as suggested anti-glob quoting does not work on Windows cygwin
+# Shellcheck SC2129 disabled, as per line echo is more readable
+
 set -e
 
-# Check All 3 Params Are Supplied
-if [ "$#" -lt 3 ]; then
-  echo "Usage: $0 SBOM_URL/SBOM_PATH JDKZIP_URL/JDKZIP_PATH REPORT_DIR"
-  echo ""
-  echo "1. SBOM_URL/SBOM_PATH - should be the FULL path OR a URL to a Temurin JDK SBOM JSON file in CycloneDX Format"
-  echo "    eg. https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.2%2B13/OpenJDK21U-sbom_x64_windows_hotspot_21.0.2_13.json"
-  echo ""
-  echo "2. JDKZIP_URL/JDKZIP_PATH - should be the FULL path OR a URL to a Temurin Windows JDK Zip file"
-  echo "    eg. https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.2%2B13/OpenJDK21U-jdk_x64_windows_hotspot_21.0.2_13.zip"
-  echo ""
-  echo "3. REPORT_DIR - should be the FULL path OR a URL to the output directory for the comparison report"
-  echo ""
+# Adoptium's public GPG key used for GPG signatures
+ADOPTIUM_PUBLIC_GPG_KEY="0x3B04D753C9050D9A5D343F39843C48A565F8F04B"
+
+# Read Parameters
+SBOM_URL=""
+TARBALL_URL=""
+REPORT_DIR=""
+USER_DEVKIT_LOCATION=""
+WORK_JDK_DIR=""
+REPRODUCIBLE_VERIFICATION=false
+
+while [[ $# -gt 0 ]] ; do
+  opt="$1";
+  shift;
+
+  echo "Parsing opt: ${opt}"
+  case "$opt" in
+    "--sbom-url" )
+    SBOM_URL="$1"; shift;;
+
+    "--jdk-url" )
+    TARBALL_URL="$1"; shift;;
+
+    "--report-dir" )
+    REPORT_DIR="$1"; shift;;
+
+    "--user-devkit-location" )
+    USER_DEVKIT_LOCATION="$1"; shift;;
+
+    "--work-jdk" )
+    WORK_JDK_DIR="$1"; shift;;
+
+    "--reproducible-verification" )
+    REPRODUCIBLE_VERIFICATION=true;;
+
+    *) echo >&2 "Invalid option: ${opt}"; exit 1;;
+  esac
+done
+
+# Check All Required Params Are Supplied
+if [ -z "$SBOM_URL" ] || [ -z "$TARBALL_URL" ] || [ -z "$REPORT_DIR" ]; then
+  echo "Usage: windows_repro_build_compare.sh [Params]"
+  echo "Parameters:"
+  echo "  Required:"
+  echo "    --sbom-url [SBOM_URL/SBOM_PATH] : should be the FULL path OR a URL to a Temurin JDK SBOM JSON file in CycloneDX Format"
+  echo "    --jdk-url [JDKZIP_URL/JDKZIP_PATH] : should be the FULL path OR a URL to a Temurin Windows JDK Zip file"
+  echo "    --report-dir [REPORT_DIR] : should be the FULL path OR a URL to the output directory for the comparison report"
+  echo "  Optional:"
+  echo "    --user-devkit-location [USER_DEVKIT_LOCATION] : FULL path OR a URL location of user built Windows Redist DLL DevKit"
+  echo "    --work-jdk [WORK_JDK_DIR] : FULL path to a suitable host JDK used by [repro_compare.sh](tooling/reproducible/repro_compare.sh:18) for preprocessing cross-compiled targets"
+  echo "    --reproducible-verification : Enables Reproducible Verification mode, where native OpenJDK source and make used rather than temurin-build scripts"
   exit 1
 fi
 
-# Read Parameters
-SBOM_URL="$1"
-TARBALL_URL="$2"
-REPORT_DIR="$3"
+# For a reproducible verification build a local secure build of the devkit must be used
+if [ "$REPRODUCIBLE_VERIFICATION" == true ] && [ -z "$USER_DEVKIT_LOCATION" ]; then
+  echo "--user-devkit-location [USER_DEVKIT_LOCATION] must be specified when using --reproducible-verification"
+  exit 1
+fi
+
 
 # Constants Required By This Script
 # These Values Should Be Updated To Reflect The Build Environment
@@ -45,10 +90,9 @@ REPORT_DIR="$3"
 WORK_DIR="/cygdrive/c/comp-jdk-build"
 ANT_VERSION_ALLOWED="1.10"
 ANT_VERSION_REQUIRED="1.10.15"
-ANT_CONTRIB_VERSION="1.0b3"
 ANT_BASE_PATH="/cygdrive/c/apache-ant"
 CW_VS_BASE_DRV="c"
-CW_VS_BASE_PATH64="/cygdrive/$CW_VS_BASE_DRV/Program Files/Microsoft Visual Studio"
+#CW_VS_BASE_PATH64="/cygdrive/$CW_VS_BASE_DRV/Program Files/Microsoft Visual Studio"
 CW_VS_BASE_PATH32="/cygdrive/$CW_VS_BASE_DRV/Program Files (x86)/Microsoft Visual Studio"
 C_COMPILER_EXE="cl.exe"
 CPP_COMPILER_EXE="cl.exe"
@@ -60,6 +104,7 @@ SIGNTOOL_BASE="C:/Program Files (x86)/Windows Kits/10"
 # Addiitonal Working Variables Defined For Use By This Script
 SBOMLocalPath="$WORK_DIR/src_sbom.json"
 DISTLocalPath="$WORK_DIR/src_jdk_dist.zip"
+JDK_TAR_HASH=""
 ScriptPath=$(dirname "$(realpath "$0")")
 rc=0
 # Function to check if a string is a valid URL
@@ -124,11 +169,17 @@ Check_Parameters() {
       exit 1
     fi
   fi
+  JDK_TAR_HASH=$(sha256sum "$DISTLocalPath" | cut -d' ' -f1)
 }
 
 Install_PreReqs() {
   # Check For JQ & Install Apt-Cyg & JQ Where Not Available
   if ! command -v jq &> /dev/null; then
+      if [ "$REPRODUCIBLE_VERIFICATION" == true ]; then
+        echo "For a Reproducible Verification build 'jq' must already be installed, please install."
+        exit 1
+      fi
+
       echo "WARNING: JQ is not installed. Attempting To Install Via Apt-Cyg"
       echo "Checking If Apt-Cyg Is Already Installed"
       if [ -f /usr/local/bin/apt-cyg ]; then
@@ -191,8 +242,14 @@ Get_SBOM_Values() {
   buildArch=$(echo "$sbomContent" | jq -r '.metadata.properties[] | select(.name == "OS architecture").value')
   buildSHA=$(echo "$sbomContent" | jq -r '.components[0].properties[] | select(.name == "Temurin Build Ref").value' | awk -F'/' '{print $NF}')
   buildStamp=$(echo "$sbomContent" | jq -r '.components[0].properties[] | select(.name == "Build Timestamp").value')
-  buildVersion=$(echo "$sbomContent" | jq -r '.metadata.component.version')
+  TEMURIN_COMPONENT_VERSION=$(echo "$sbomContent" | jq -r '.metadata.component.version')
+  TEMURIN_VERSION="jdk-"$(echo "$sbomContent" | jq -r '.metadata.component.version' | sed 's/-beta//' | cut -f1 -d"-")
   buildArgs=$(echo "$sbomContent" | jq -r '.components[0].properties[] | select(.name == "makejdk_any_platform_args").value')
+
+  # Temurin beta-ea builds have release tags ending "-ea-beta"
+  if [[ "$TEMURIN_COMPONENT_VERSION" == *-beta*-ea ]]; then
+    TEMURIN_VERSION="${TEMURIN_VERSION}-ea-beta"
+  fi
 
   # Check if the tool was found
   if [ -n "$msvsWindowsCompiler" ]; then
@@ -259,9 +316,9 @@ Get_SBOM_Values() {
       echo "This Is A Mandatory Element"
       exit 1
   fi
-  if [ -n "$buildVersion" ]; then
-      echo "Temurin Build Version: $buildVersion"
-      export buildVersion
+  if [ -n "$TEMURIN_VERSION" ]; then
+      echo "Temurin Build Version: $TEMURIN_VERSION"
+      export TEMURIN_VERSION
   else
       echo "ERROR: Temurin Build Version not found in the SBOM."
       echo "This Is A Mandatory Element"
@@ -275,7 +332,42 @@ Get_SBOM_Values() {
       echo "This Is A Mandatory Element"
       exit 1
   fi
+  
+  # Determine target architecture from buildArgs
+  if [[ "$buildArgs" == *"--openjdk-target=aarch64-unknown-cygwin"* ]]; then
+      targetArch="arm64"
+      echo "Target Architecture (from buildArgs): arm64 (cross-compile)"
+  else
+      targetArch=""
+      echo "No Target Architecture (from buildArgs)"
+  fi
+  export targetArch
   echo ""
+
+  if [ "$REPRODUCIBLE_VERIFICATION" == true ]; then
+    adoptiumSrcCommitUrl=$(echo "$sbomContent" | jq -r '.components[0].properties[] | select(.name == "OpenJDK Source Commit").value')
+    buildScmRef=$(echo "$sbomContent" | jq -r '.components[0].properties[] | select(.name == "SCM Ref").value')
+    adoptiumConfigureArgs=$(echo "$sbomContent" | jq -r '.components[0].properties[] | select(.name == "configure_args").value')
+
+    # Check if the adoptiumSrcCommitUrl, buildScmRef and configure_args were found
+    if [ -n "$adoptiumSrcCommitUrl" ] && [ -n "$buildScmRef" ] && [ -n "$adoptiumConfigureArgs" ]; then
+      adoptiumRepo="${adoptiumSrcCommitUrl%/commit/*}"
+      openjdkSourceRepo="${adoptiumRepo/adoptium/openjdk}"
+      openjdkSourceTag="${buildScmRef%_adopt}"
+
+      echo "Performing a Reproducible Verification Build from $openjdkSourceRepo with tag $openjdkSourceTag"
+      echo "Adoptium OpenJDK configure argmuents from original Temurin build:"
+      echo "    $adoptiumConfigureArgs"
+      echo ""
+      export openjdkSourceRepo
+      export openjdkSourceTag
+      export adoptiumConfigureArgs
+    else
+      echo "ERROR: Adoptium OpenJDK Source Commit, SCM Ref and configure_args must be specified in the SBOM."
+      echo "These Are Mandatory Elements"
+      exit 1
+    fi
+  fi
 }
 
 Check_Architecture() {
@@ -294,11 +386,16 @@ Check_Architecture() {
     msvsArch="x86"
   elif [[ $systemArchitecture == *arm64* ]]; then
     echo "System Architecture: 64-bit (ARM)"
-    sysArch="Arm64"
+    sysArch="arm64"
     msvsArch="arm64"
   else
     echo "System Architecture: Other - Not Supported"
     exit 1
+  fi
+
+  # If no target arch in BuildArgs then we are not cross-compiling, then default to system
+  if [[ -z "$targetArch" ]]; then
+    targetArch="$msvsArch"
   fi
 
   if [[ "$sysArch" == "$msvsArch" ]]; then
@@ -324,7 +421,7 @@ Check_VS_Versions() {
   fi
 
   if [[ $visualStudioVersion =~ "2022" ]]; then
-    MSVS_SEARCH_PATH="$CW_VS_BASE_PATH64/2022"
+    MSVS_SEARCH_PATH="$CW_VS_BASE_PATH32/2022"
   elif [[ $visualStudioVersion =~ "2019" ]]; then
     MSVS_SEARCH_PATH=$CW_VS_BASE_PATH32/2019
   elif [[ $visualStudioVersion =~ "2017" ]]; then
@@ -338,9 +435,9 @@ Check_VS_Versions() {
   fi
   echo "Visual Studio Base Path = $MSVS_SEARCH_PATH"
 
-  # Add Host Architecture To Exe name
-  C_COMPILER_PATH="Host$msvsArch/$msvsArch"
-  CPP_COMPILER_PATH="Host$msvsArch/$msvsArch"
+  # Add Host Architecture and target To Exe name
+  C_COMPILER_PATH="Host$msvsArch/$targetArch"
+  CPP_COMPILER_PATH="Host$msvsArch/$targetArch"
 
   # Define Search Path For C Compilers
   echo ""
@@ -436,13 +533,13 @@ Check_UCRT_Location() {
   URCT_CYGPATH=$(cygpath -u "$WIN_URCT_BASE")
   WIN_URCT_PATH="$URCT_CYGPATH"
   # Only Search For DLLs for the correct architecture
-  UCRTCOUNT=$(find "$WIN_URCT_PATH" | grep $msvsArch | grep -ic ucrtbase.dll)
+  UCRTCOUNT=$(find "$WIN_URCT_PATH" | grep $targetArch | grep -ic ucrtbase.dll)
   if [ "$UCRTCOUNT" -eq 0 ] ; then
     echo "ERROR - NO ucrtbase.dll Could Be Found For The Base Path Specified - Exiting"
     exit 1
   else
     UCRT_FOUND=0
-    dll_paths=$(find "$WIN_URCT_PATH" -name 'ucrtbase.dll' | grep $msvsArch 2>/dev/null)
+    dll_paths=$(find "$WIN_URCT_PATH" -name 'ucrtbase.dll' | grep $targetArch 2>/dev/null)
     for dll in $dll_paths ; do
       dllpath=$(cygpath -s -m "$dll")
       # Check The Version Of Each
@@ -475,31 +572,18 @@ Check_And_Install_Ant() {
       fi
   done
   if [ "${ant_found}" != true ]; then
+      if [ "$REPRODUCIBLE_VERIFICATION" == true ]; then
+        echo "For a Reproducible Verification build ant ${ANT_VERSION} must already be installed in location ${ANT_BASE_PATH}/apache-ant-${ANT_VERSION}, please install."
+        exit 1
+      fi
       echo "Ant Doesn't Exist At The Correct Version - Installing"
       # Ant Version Not Found... Check And Create Paths
       echo "Downloading ant for SBOM creation:"
       curl -o "/tmp/apache-ant-${ANT_VERSION}-bin.zip" "https://archive.apache.org/dist/ant/binaries/apache-ant-${ANT_VERSION_REQUIRED}-bin.zip"
       (cd /usr/local && unzip -qn "/tmp/apache-ant-${ANT_VERSION_REQUIRED}-bin.zip")
       rm "/tmp/apache-ant-${ANT_VERSION_REQUIRED}-bin.zip"
-      echo "Downloading ant-contrib-${ANT_CONTRIB_VERSION}:"
-      curl -L -o "/tmp/ant-contrib-${ANT_CONTRIB_VERSION}-bin.zip" "https://sourceforge.net/projects/ant-contrib/files/ant-contrib/${ANT_CONTRIB_VERSION}/ant-contrib-${ANT_CONTRIB_VERSION}-bin.zip"
-      (unzip -qnj "/tmp/ant-contrib-${ANT_CONTRIB_VERSION}-bin.zip" "ant-contrib/ant-contrib-${ANT_CONTRIB_VERSION}.jar" -d "/usr/local/apache-ant-${ANT_VERSION}/lib")
-      rm "/tmp/ant-contrib-${ANT_CONTRIB_VERSION}-bin.zip"
   else
       echo "Ant Version: ${ANT_VERSION_ALLOWED}.X Already Installed"
-  fi
-  echo ""
-  # Check For Existence Of Required Version Of Ant-Contrib For Existing Ant
-  echo "Checking For Installation Of Ant Contrib Version $ANT_CONTRIB_VERSION "
-  if [ -r "${ANT_BASE_PATH}/apache-ant-${ANT_VERSION}/bin/ant" ] && [ ! -r "${ANT_BASE_PATH}/apache-ant-${ANT_VERSION}/lib/ant-contrib.jar" ]; then
-    echo "But Ant-Contrib Is Missing - Installing"
-    # Ant Version Not Found... Check And Create Paths
-    echo Downloading ant-contrib-${ANT_CONTRIB_VERSION}:
-    curl -L https://sourceforge.net/projects/ant-contrib/files/ant-contrib/${ANT_CONTRIB_VERSION}/ant-contrib-${ANT_CONTRIB_VERSION}-bin.zip > /tmp/ant-contrib-${ANT_CONTRIB_VERSION}-bin.zip
-    (unzip -qnj "/tmp/ant-contrib-${ANT_CONTRIB_VERSION}-bin.zip" "ant-contrib/ant-contrib-${ANT_CONTRIB_VERSION}.jar" -d "${ANT_BASE_PATH}/apache-ant-${ANT_VERSION}/lib")
-    rm /tmp/ant-contrib-${ANT_CONTRIB_VERSION}-bin.zip
-  else
-    echo "Ant Contrib Version: $ANT_CONTRIB_VERSION Is Already Installed"
   fi
 }
 
@@ -519,10 +603,23 @@ Check_And_Install_BootJDK() {
     if [ $msvsArch = "x86" ] ; then NATIVE_API_ARCH="x86" ; fi
 
     echo "https://api.adoptium.net/v3/binary/version/jdk-${bootJDK}/windows/${NATIVE_API_ARCH}/jdk/hotspot/normal/eclipse?project=jdk"
-    echo "Downloading & Extracting.. Boot JDK Version : $bootJDK"
+    echo "Downloading Boot JDK Version : $bootJDK"
     curl -s -L "https://api.adoptium.net/v3/binary/version/jdk-${bootJDK}/windows/${NATIVE_API_ARCH}/jdk/hotspot/normal/eclipse?project=jdk" --output "$WORK_DIR/bootjdk.zip"
+    echo "Downloading gpg signature.."
+    curl -s -L "https://api.adoptium.net/v3/signature/version/jdk-${bootJDK}/windows/${NATIVE_API_ARCH}/jdk/hotspot/normal/eclipse?project=jdk" --output "$WORK_DIR/bootjdk.zip.sig"
+
+    echo "Obtaining Adoptium's public GPG key.."
+    curl -sSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=${ADOPTIUM_PUBLIC_GPG_KEY}" --output "$WORK_DIR/adoptium.gpg.key"
+    gpg --import "$WORK_DIR/adoptium.gpg.key"
+    rm "$WORK_DIR/adoptium.gpg.key"
+    if ! gpg --verify "$WORK_DIR/bootjdk.zip.sig" "$WORK_DIR/bootjdk.zip"; then
+      echo "GPG Verify of $WORK_DIR/bootjdk.zip failed"
+      exit 1
+    fi
+
     unzip -q "$WORK_DIR/bootjdk.zip" -d "$WORK_DIR"
-    rm -rf "$WORK_DIR/bootjdk.zip"
+    rm "$WORK_DIR/bootjdk.zip"
+    rm "$WORK_DIR/bootjdk.zip.sig"
   fi
 }
 
@@ -534,7 +631,7 @@ Clone_Build_Repo() {
   fi
 
   echo "Git is installed. Proceeding with the script."
-  if [ ! -r "$WORK_DIR/temurin-build" ] ; then
+  if [ "$REPRODUCIBLE_VERIFICATION" == false ] && [ ! -r "$WORK_DIR/temurin-build" ] ; then
     echo "Cloning Temurin Build Repository"
     echo ""
     git clone -q https://github.com/adoptium/temurin-build "$WORK_DIR/temurin-build" || exit 1
@@ -544,7 +641,37 @@ Clone_Build_Repo() {
   fi
 }
 
-Prepare_Env_For_Build() {
+Prepare_Env_For_OpenJDK_Build() {
+  echo "Setting Variables"
+  export BOOTJDK_HOME=$WORK_DIR/jdk-${bootJDK}
+
+  # reset --jdk-boot-dir
+  adoptiumConfigureArgs="$(echo "$adoptiumConfigureArgs" | sed -e "s|--with-boot-jdk=[^ ]*|--with-boot-jdk=${BOOTJDK_HOME}|")"
+  adoptiumConfigureArgs="$(echo "$adoptiumConfigureArgs" | sed -e "s|--with-cacerts-src=[^ ]*||")"
+
+  mkdir -p "$WORK_DIR/devkit"
+  echo "Unpacking ${USER_DEVKIT_LOCATION} into $WORK_DIR/devkit"
+  if is_url "${USER_DEVKIT_LOCATION}" ; then
+    curl -L "${USER_DEVKIT_LOCATION}" --output "$WORK_DIR/devkit.zip"
+    unzip -q "$WORK_DIR/devkit.zip" -d "$WORK_DIR/devkit"
+    rm "$WORK_DIR/devkit.zip"
+  else
+    unzip -q "${USER_DEVKIT_LOCATION}" -d "$WORK_DIR/devkit"
+  fi
+
+  adoptiumConfigureArgs="$(echo "$adoptiumConfigureArgs" | sed -e "s|--with-ucrt-dll-dir=[^ ]*|--with-ucrt-dll-dir=$WORK_DIR/devkit/ucrt/DLLs/$targetArch|")"
+  adoptiumConfigureArgs="$(echo "$adoptiumConfigureArgs" | sed -e "s|--with-msvcr-dll=[^ ]*|--with-msvcr-dll=$WORK_DIR/devkit/$targetArch/vcruntime140.dll|")"
+  adoptiumConfigureArgs="$(echo "$adoptiumConfigureArgs" | sed -e "s|--with-vcruntime-1-dll=[^ ]*|--with-vcruntime-1-dll=$WORK_DIR/devkit/$targetArch/vcruntime140_1.dll|")"
+  adoptiumConfigureArgs="$(echo "$adoptiumConfigureArgs" | sed -e "s|--with-msvcp-dll=[^ ]*|--with-msvcp-dll=$WORK_DIR/devkit/$targetArch/msvcp140.dll|")"
+
+  echo ""
+  echo "OpenJDK Configure Argument List = "
+  echo "$adoptiumConfigureArgs"
+  echo ""
+  echo "Parameters Parsed Successfully"
+}
+
+Prepare_Env_For_Temurin_Build() {
   echo "Setting Variables"
   export BOOTJDK_HOME=$WORK_DIR/jdk-${bootJDK}
 
@@ -553,17 +680,17 @@ Prepare_Env_For_Build() {
     buildArgs="--build-reproducible-date \"${buildStamp}\" ${buildArgs}"
   fi
   # reset --jdk-boot-dir
-  # shellcheck disable=SC2001
   buildArgs="$(echo "$buildArgs" | sed -e "s|--jdk-boot-dir [^ ]*|--jdk-boot-dir ${BOOTJDK_HOME}|")"
-  # shellcheck disable=SC2001
   buildArgs="$(echo "$buildArgs" | sed -e "s|--with-toolchain-version [^ ]*|with-toolchain-version ${visualStudioVersion}|")"
-  # shellcheck disable=SC2001
   buildArgs="$(echo "$buildArgs" | sed -e "s|--with-ucrt-dll-dir=[^ ]*|--with-ucrt-dll-dir=temporary_speech_mark_placeholder${UCRT_PARAM_PATH}temporary_speech_mark_placeholder|")"
-  # shellcheck disable=SC2001
   buildArgs="$(echo "$buildArgs" | sed -e "s|--user-openjdk-build-root-directory [^ ]*|--user-openjdk-build-root-directory ${WORK_DIR}/temurin-build/workspace/build/openjdkbuild/|")"
   # remove ingored options
   buildArgs=${buildArgs/--assemble-exploded-image /}
   buildArgs=${buildArgs/--enable-sbom-strace /}
+
+  if [[ "${buildArgs}" == *"--use-adoptium-devkit"* ]] && [[ -n "${USER_DEVKIT_LOCATION}" ]]; then
+    buildArgs="--user-devkit-location ${USER_DEVKIT_LOCATION} ${buildArgs}"
+  fi
 
   echo ""
   echo "Make JDK Any Platform Argument List = "
@@ -572,15 +699,62 @@ Prepare_Env_For_Build() {
   echo "Parameters Parsed Successfully"
 }
 
-Build_JDK() {
-  echo "Building JDK..."
+Build_JDK_Using_Temurin_Build() {
+  echo "Building JDK using temurin-build scripts..."
 
   # Trigger Build
   cd "$WORK_DIR"
-  echo "cd temurin-build && ./makejdk-any-platform.sh $buildArgs > build.log 2>&1" | sh
+
+  if ! echo "cd temurin-build && ./makejdk-any-platform.sh $buildArgs > build.log 2>&1" | sh; then
+    # Echo build.log
+    cat temurin-build/build.log || true
+    echo "makejdk-any-platform.sh build failure, exiting"
+    exit 1
+  fi
+
+  # Echo build.log
+  cat temurin-build/build.log
+
   # Copy The Built JDK To The Working Directory
   cp "${WORK_DIR}"/temurin-build/workspace/target/OpenJDK*-jdk_*.zip "$WORK_DIR/reproJDK.zip"
   cp "${WORK_DIR}"/temurin-build/build.log "$WORK_DIR/build.log"
+}
+
+Build_JDK_Using_OpenJDK_Build() {
+  echo "Building JDK using OpenJDK configure and make..."
+
+  # Trigger Build
+  cd "$WORK_DIR"
+
+  echo "Cloning OpenJDK source Repository: $openjdkSourceRepo into $WORK_DIR/openjdk"
+  git clone -q "$openjdkSourceRepo" "$WORK_DIR/openjdk" || exit 1
+  echo "Switching To OpenJDK tag : $openjdkSourceTag"
+  (cd "$WORK_DIR/openjdk" && git checkout -q "$openjdkSourceTag")
+
+  echo "Executing: bash ./configure $adoptiumConfigureArgs"
+  if ! echo "cd openjdk && bash ./configure $adoptiumConfigureArgs > repro_configure.log 2>&1" | sh; then
+    cat openjdk/repro_configure.log || true
+    echo "OpenJDK configure failure, exiting"
+    exit 1
+  fi
+
+  cat openjdk/repro_configure.log
+
+  echo "Executing: make images"
+  if ! echo "cd openjdk/build/* && make images > ../../repro_build.log 2>&1" | sh; then
+    cat openjdk/repro_build.log || true
+    echo "OpenJDK make images failure, exiting"
+    exit 1
+  fi
+
+  cat openjdk/repro_build.log
+
+  # Copy The Built JDK To The Working Directory
+  mv openjdk/build/*/images/jdk openjdk/build/$openjdkSourceTag
+  (cd openjdk/build && zip -r reproJDK.zip $openjdkSourceTag)
+  cp "${WORK_DIR}"/openjdk/build/reproJDK.zip "$WORK_DIR/reproJDK.zip"
+  cp "${WORK_DIR}"/openjdk/repro_configure.log "$WORK_DIR/build.log"
+  cat "${WORK_DIR}"/openjdk/repro_build.log >> "$WORK_DIR/build.log"
 }
 
 Compare_JDK() {
@@ -637,12 +811,46 @@ Compare_JDK() {
   # Run Comparison Script
   set +e
   cd "$ScriptPath" || exit 1
-  ./repro_compare.sh temurin $WORK_DIR/compare/src_jdk temurin $WORK_DIR/compare/tar_jdk CYGWIN 2>&1 &
+  if [ "$REPRODUCIBLE_VERIFICATION" == true ]; then
+    ./repro_compare.sh temurin $WORK_DIR/compare/src_jdk hotspot $WORK_DIR/compare/tar_jdk CYGWIN "${WORK_JDK_DIR}" 2>&1 &
+  else
+    ./repro_compare.sh temurin $WORK_DIR/compare/src_jdk temurin $WORK_DIR/compare/tar_jdk CYGWIN "${WORK_JDK_DIR}" 2>&1 &
+  fi
   pid=$!
   wait $pid
 
   rc=$?
   set -e
+
+  if [ "$REPRODUCIBLE_VERIFICATION" == true ]; then
+    EVIDENCE_LOG="$PWD/reproducible_evidence.log"
+    if [ $rc -eq 0 ]; then
+      # Adjust Target Arch to standard Adoptium format
+      evidenceArch=""
+      if [ $targetArch = "arm64" ] ; then evidenceArch="aarch64" ; fi
+      if [ $targetArch = "x64" ] ; then evidenceArch="x64" ; fi
+      if [ $targetArch = "x86" ] ; then evidenceArch="x86" ; fi
+
+      echo "Successful 100% Reproducible Verification" >> "${EVIDENCE_LOG}"
+      echo "Eclipse Temurin version: ${TEMURIN_VERSION}" >> "${EVIDENCE_LOG}"
+      echo "                   arch: ${evidenceArch}" >> "${EVIDENCE_LOG}"
+      echo "                     os: windows" >> "${EVIDENCE_LOG}"
+      echo "                 sha256: ${JDK_TAR_HASH}" >> "${EVIDENCE_LOG}"
+    else
+      echo "Reproducible Verification not identical" >> "${EVIDENCE_LOG}"
+      echo "Refer to guide for diagnosis and reporting: https://github.com/adoptium/temurin-build/wiki/Temurin-3rd-Party-Reproducible-Verification-Guides" >> "${EVIDENCE_LOG}"
+    fi
+    echo
+    echo "Reproducible Verification evidence written to file: ${EVIDENCE_LOG}"
+    echo "Contents:"
+    echo
+    cat  "${EVIDENCE_LOG}"
+    echo
+    echo "Provide contents of evidence file as the CDXA evidence: ${EVIDENCE_LOG}"
+    echo "For providing a 3rd party Reproducible Verification CDXA, see: https://github.com/adoptium/temurin-cdxa/blob/main/CONTRIBUTING.md"
+    echo
+  fi
+
   cd "$WORK_DIR"
   # Display The Content Of reprotest.diff
   echo ""
@@ -655,10 +863,19 @@ Compare_JDK() {
 
   if [ -n "$REPORT_DIR" ]; then
     echo "Copying Output To $REPORT_DIR"
+    cp "$EVIDENCE_LOG" "$REPORT_DIR"
     cp "$ScriptPath/reprotest.diff" "$REPORT_DIR"
     cp "$WORK_DIR/reproJDK.zip" "$REPORT_DIR"
     cp "$WORK_DIR/src_sbom.json" "$REPORT_DIR"
     cp "$WORK_DIR/build.log" "$REPORT_DIR"
+  fi
+
+  if [ "$REPRODUCIBLE_VERIFICATION" == true ]; then
+    if [ "$rc" == "0" ]; then
+      echo "Successfully reproducibly verified $TARBALL_URL build $openjdkSourceTag"
+    else
+      echo "Differences found in verification of $TARBALL_URL build $openjdkSourceTag"
+    fi
   fi
 }
 
@@ -680,7 +897,7 @@ Clean_Up_Everything() {
 
 # Begin Main Script Here
 echo "---------------------------------------------"
-echo "Begining Reproducible Windows Build From SBOM"
+echo "Beginning Reproducible Windows Build From SBOM"
 echo "---------------------------------------------"
 echo "Checking Environment And Parameters"
 echo "---------------------------------------------"
@@ -710,9 +927,17 @@ Check_And_Install_BootJDK
 echo "---------------------------------------------"
 Clone_Build_Repo
 echo "---------------------------------------------"
-Prepare_Env_For_Build
+if [ "$REPRODUCIBLE_VERIFICATION" == true ]; then
+  Prepare_Env_For_OpenJDK_Build
+else
+  Prepare_Env_For_Temurin_Build
+fi
 echo "---------------------------------------------"
-Build_JDK
+if [ "$REPRODUCIBLE_VERIFICATION" == true ]; then
+  Build_JDK_Using_OpenJDK_Build
+else
+  Build_JDK_Using_Temurin_Build
+fi
 echo "---------------------------------------------"
 Compare_JDK
 echo "---------------------------------------------"

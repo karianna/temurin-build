@@ -39,7 +39,7 @@ storeInArrays() {
 
 echo "Generating regex arrays to match against failures."
 
-r="SIGSEGV"
+r="(SIGSEGV|Segmentation\sfault)"
 m="Segmentation error."
 p="1"
 s="0"
@@ -117,7 +117,7 @@ p="1"
 s="0"
 storeInArrays "${r}" "${m}" "${p}" "${s}"
 
-r="Build.*\#[0-9].completed\:.(FAILURE|ABORTED)"
+r="Build.*\#[0-9]+.completed\:.(FAILURE|ABORTED)"
 m="Subjob failed. It was not a test, installer, or signing job."
 p="1"
 s="0"
@@ -142,9 +142,39 @@ s="0"
 storeInArrays "${r}" "${m}" "${p}" "${s}"
 
 r="return\scode\s[1-9]+"
-m="."
+m="Process return code indicates error."
 p="1"
 s="0"
+storeInArrays "${r}" "${m}" "${p}" "${s}"
+
+r="Build\s(extended|sanity|special|dev)\.[a-z][a-z][a-z]\scompleted\:\s(FAILURE|ABORTED)"
+m="Remote tests failed."
+p="1"
+s="1"
+storeInArrays "${r}" "${m}" "${p}" "${s}"
+
+r="Failed\sto\supdateBuildStatus\sfor\sremoteJobTargets\s.*\sMax\snumber\sof\sconnection\sretries\shave\sbeen\sexceeded"
+m="Cannot reconnect to remote tests."
+p="1"
+s="1"
+storeInArrays "${r}" "${m}" "${p}" "${s}"
+
+r="Failed\sin\sbranch\s(extended|sanity|special|dev)\.[a-z][a-z][a-z]"
+m="Remote tests could not be triggered."
+p="1"
+s="1"
+storeInArrays "${r}" "${m}" "${p}" "${s}"
+
+r="Failed\sto\scopy\sartifacts"
+m="Artifacts could not be transferred between jobs. May require a jenkins restart if other causes are not apparent."
+p="1"
+s="0"
+storeInArrays "${r}" "${m}" "${p}" "${s}"
+
+r="ERROR\:\sTest_Job_Auto_Gen\s\#[0-9]+ was deleted"
+m="The test job generator job was deleted."
+p="1"
+s="1"
 storeInArrays "${r}" "${m}" "${p}" "${s}"
 
 r="(Error\:\s|Exception\:\s)"

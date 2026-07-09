@@ -20,14 +20,32 @@ JDK_DIR1="$2"
 BLD_TYPE2="$3"
 JDK_DIR2="$4"
 OS="$5"
+WORK_JDK="${6:-}"
+
+# Log file for evidence
+EVIDENCE_LOG="reproducible_evidence.log"
+rm -f "${EVIDENCE_LOG}"
 
 checkJdkDir() {
   JDK_DIR="${1}"
-  if [[ ! -d "${JDK_DIR}" ]] || [[ ! -d "${JDK_DIR}/bin"  ]]; then
+  JDK_HOME_DIR="$JDK_DIR"
+  if [[ "$OS" =~ Darwin* ]]; then
+    JDK_HOME_DIR="$JDK_DIR/Contents/Home"
+  fi
+
+  if [[ ! -d "${JDK_DIR}" ]] || [[ ! -d "${JDK_HOME_DIR}/bin"  ]]; then
     echo "$JDK_DIR does not exist or does not point at a JDK"
-    echo "repro_compare.sh (temurin|openjdk) JDK_DIR1 (temurin|openjdk) JDK_DIR2 OS"
+    echo "repro_compare.sh (temurin|openjdk) JDK_DIR1 (temurin|openjdk) JDK_DIR2 OS [WORK_JDK]"
     exit 1
   fi
+}
+
+# Log to stdout and to the evidence file
+evidenceLog() {
+  text="${1}"
+
+  echo "${text}"
+  echo "${text}" >> "${EVIDENCE_LOG}"
 }
 
 checkJdkDir "${JDK_DIR1}"
@@ -41,9 +59,13 @@ if [ -z "${PREPROCESS:-}" ] ; then
   PREPROCESS="yes"
 fi
 
-mkdir "${JDK_DIR}_BK"
-cp -R "${JDK_DIR1}"/* "${JDK_DIR}"_BK
-BK_JDK_DIR=$(realpath "${JDK_DIR}"_BK/)
+if [ -z "${WORK_JDK}" ] ; then
+  mkdir "${JDK_DIR}_BK"
+  cp -R "${JDK_DIR1}"/* "${JDK_DIR}"_BK
+  BK_JDK_DIR=$(realpath "${JDK_DIR}"_BK/)
+else
+  BK_JDK_DIR="${WORK_JDK}"
+fi
 
 JDK_DIR_Arr=("${JDK_DIR1}" "${JDK_DIR2}")
 if [ "$PREPROCESS" != "no" ] ; then
@@ -51,7 +73,7 @@ for  JDK_DIR in "${JDK_DIR_Arr[@]}"
 do
   echo "$(date +%T) : Pre-processing ${JDK_DIR}"
   rc=0
-  source "$(dirname "$0")"/repro_process.sh "${JDK_DIR}" "${OS}" || rc=$?
+  source "$(dirname "$0")"/repro_process.sh "${JDK_DIR}" "${OS}" "${BK_JDK_DIR}" || rc=$?
   if [ $rc != 0 ]; then
     echo "$(date +%T): Pre-processing of ${JDK_DIR} ${OS} failed"
     exit 1
@@ -64,7 +86,11 @@ do
   # release file build machine OS level and builds-scripts SHA can/will be different
   cleanTemurinBuildInfo "${JDK_DIR}"
 
-  if [[ "$OS" =~ CYGWIN* ]] || [[ "$OS" =~ Darwin* ]]; then 
+  removeJlinkRuntimelinkHashes "${JDK_DIR}" "${OS}"
+
+  removeLibJVMBuildID "${JDK_DIR}" "${OS}"
+
+  if [[ "$OS" =~ CYGWIN* ]] || [[ "$OS" =~ Darwin* ]]; then
     removeSystemModulesHashBuilderParams "${JDK_DIR}" "${OS}" "${BK_JDK_DIR}"
     processModuleInfo "${JDK_DIR}" "${OS}" "${BK_JDK_DIR}"
   fi
@@ -74,16 +100,22 @@ else
 fi
 
 files1=$(find "${JDK_DIR1}" -type f | wc -l)
-echo "Number of files: ${files1}"
+evidenceLog "Number of files: ${files1}"
 rc=0
 output="reprotest.diff"
-echo "$(date +%T) : Comparing expanded JDKs from ${JDK_DIR1} with ${JDK_DIR2} ..."
+evidenceLog "$(date "+%Y-%m-%dT%H:%M:%S%z") : Comparing expanded JDKs from ${JDK_DIR1} with ${JDK_DIR2} ..."
 diff -r -q "${JDK_DIR1}" "${JDK_DIR2}" > "${output}" || rc=$?
-echo "$(date +%T) : diff complete - rc=$rc. Output written to file: ${output}"
+evidenceLog "$(date "+%Y-%m-%dT%H:%M:%S%z") : diff complete - rc=$rc."
+echo "Output written to file: ${output}"
 
 cat "${output}"
+cat "${output}" >> "${EVIDENCE_LOG}"
 
-grep "Files .*" "${output}" | while read -r line; do
+# Restricting detailed output to classlist files only.
+# This is because grepping every file overloads the test
+# job with too much output, but the class list contents
+# are especially useful when debugging a failure.
+grep "Files .*/classlist" "${output}" | while read -r line; do
   FILE1=$(echo "$line" | awk '{print $2}')
   FILE2=$(echo "$line" | awk '{print $4}')
   echo "diff -c on $FILE1 and $FILE2"
@@ -91,7 +123,7 @@ grep "Files .*" "${output}" | while read -r line; do
 done
 
 num_differences=$(wc -l < "${output}")
-echo "Number of differences: ${num_differences}"
+evidenceLog "Number of differences: ${num_differences}"
 repro_pc100=$(( (files1-num_differences)*100*100/files1 ))
 value_len=${#repro_pc100}
 if [ "$repro_pc100" == "10000" ]; then
@@ -103,6 +135,6 @@ elif [ "$value_len" == "3" ]; then
 else
     repro_pc="0.${repro_pc100}"
 fi
-echo "ReproduciblePercent = ${repro_pc} %"
+evidenceLog "ReproduciblePercent = ${repro_pc} %"
 
 exit $rc

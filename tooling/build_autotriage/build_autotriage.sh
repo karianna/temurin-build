@@ -52,16 +52,13 @@ temurinPlatforms+=("alpine-linux-x64");     platformStart+=(8);  platformEnd+=(9
 temurinPlatforms+=("linux-aarch64");        platformStart+=(8);  platformEnd+=(99)
 temurinPlatforms+=("linux-arm");            platformStart+=(8);  platformEnd+=(20)
 temurinPlatforms+=("linux-ppc64le");        platformStart+=(8);  platformEnd+=(99)
-temurinPlatforms+=("linux-riscv64");        platformStart+=(21); platformEnd+=(99)
+temurinPlatforms+=("linux-riscv64");        platformStart+=(17); platformEnd+=(99)
 temurinPlatforms+=("linux-s390x");          platformStart+=(11); platformEnd+=(99)
 temurinPlatforms+=("linux-x64");            platformStart+=(8);  platformEnd+=(99)
 temurinPlatforms+=("mac-aarch64");          platformStart+=(11); platformEnd+=(99)
 temurinPlatforms+=("mac-x64");              platformStart+=(8);  platformEnd+=(99)
-temurinPlatforms+=("solaris-sparcv9");      platformStart+=(8);  platformEnd+=(8)
-temurinPlatforms+=("solaris-x64");          platformStart+=(8);  platformEnd+=(8)
 temurinPlatforms+=("windows-aarch64");      platformStart+=(21); platformEnd+=(99)
 temurinPlatforms+=("windows-x64");          platformStart+=(8);  platformEnd+=(99)
-temurinPlatforms+=("windows-x86-32");       platformStart+=(8);  platformEnd+=(17)
 
 # This stores any error messages that did not terminate the triage script altogether.
 errorLog() {
@@ -199,31 +196,33 @@ identifyFailedBuildsInTimerPipelines() {
       # Skip pipelines that are still running.
       if [[ $jsonEntry =~ ^\"startBy\" ]]; then
         if [[ ! $pipelineStatus == "Done" ]]; then
-          pipelineStatus="unknown"
-          continue
+          if [[ ! $pipelineStatus == "CurrentBuildDone" ]]; then
+            pipelineStatus="unknown"
+            continue
+          fi
         fi
       fi
 
       # Expecting 3 pipelines for jdk8, but only 1 for other versions.
       if [[ ${arrayOfAllJDKVersions[v]} -eq 8 ]]; then
         if [[ $jsonEntry =~ ^\"startBy\".*betaTrigger.8ea ]]; then
-          if [[ $jsonEntry =~ betaTrigger\_8ea.x64AlpineLinux && ${latestJdk8Pipelines[1]} == "none" ]]; then
+          if [[ $jsonEntry =~ betaTrigger\_8ea.x64AlpineLinux && "${latestJdk8Pipelines[1]}" == "none" ]]; then
             if wasPipelineStartedByUser "$latestTimerPipeline" "${jdkJenkinsJobVersion}"; then
               latestJdk8Pipelines[1]=$latestTimerPipeline
               echo "Found Alpine Linux JDK8 pipeline here: https://ci.adoptium.net/job/build-scripts/job/openjdk8-pipeline/${latestTimerJenkinsJobID}/"
             fi
-          elif [[ $jsonEntry =~ betaTrigger\_8ea\_arm32Linux && ${latestJdk8Pipelines[2]} == "none" ]]; then
+          elif [[ $jsonEntry =~ betaTrigger\_8ea\_arm32Linux && "${latestJdk8Pipelines[2]}" == "none" ]]; then
             if wasPipelineStartedByUser "$latestTimerPipeline" "${jdkJenkinsJobVersion}"; then
               latestJdk8Pipelines[2]=$latestTimerPipeline
               echo "Found Arm32 Linux JDK8 pipeline here: https://ci.adoptium.net/job/build-scripts/job/openjdk8-pipeline/${latestTimerJenkinsJobID}"
             fi
-          elif [[ $jsonEntry =~ betaTrigger\_8ea\\\" && ${latestJdk8Pipelines[0]} == "none" ]]; then
+          elif [[ $jsonEntry =~ betaTrigger\_8ea\\\" && "${latestJdk8Pipelines[0]}" == "none" ]]; then
             if wasPipelineStartedByUser "$latestTimerPipeline" "${jdkJenkinsJobVersion}"; then
               latestJdk8Pipelines[0]=$latestTimerPipeline
               echo "Found core JDK8 pipeline here: https://ci.adoptium.net/job/build-scripts/job/openjdk8-pipeline/${latestTimerJenkinsJobID}"
             fi
           fi
-          if [[ ${latestJdk8Pipelines[0]} != "none" && ${latestJdk8Pipelines[1]} != "none" && ${latestJdk8Pipelines[2]} != "none" ]]; then
+          if [[ "${latestJdk8Pipelines[0]}" != "none" && "${latestJdk8Pipelines[1]}" != "none" && "${latestJdk8Pipelines[2]}" != "none" ]]; then
             echo "Found all 3 pipelines for JDK8."
             break
           fi
@@ -291,7 +290,7 @@ identifyFailedBuildsInTimerPipelines() {
     declare -a listOfBuildNums
     declare -a listOfBuildResults
 
-    shorterListOfBuilds=""
+    shorterListOfBuilds=","
 
     # Using this single-build tuple to ensure all of the build data lines up in the three arrays.
     sbTuple=("none" "none" "none")
@@ -300,20 +299,35 @@ identifyFailedBuildsInTimerPipelines() {
     for jsonEntry in $listOfPipelineBuilds
     do
       if [[ $jsonEntry =~ ^\"buildName\"\:.* ]]; then
-        sbTuple[0]=${jsonEntry}
-      elif [[ $jsonEntry =~ .*\"buildNum\"\.* ]]; then
-        sbTuple[1]=${jsonEntry}
+        sbTuple[0]="${jsonEntry:13:-1}"
+      elif [[ $jsonEntry =~ .*\"buildNum\".* ]]; then
+        sbTuple[1]="${jsonEntry:11}"
       elif [[ $jsonEntry =~ .*\"buildResult\".* ]]; then
-        sbTuple[2]=${jsonEntry}
+        sbTuple[2]="${jsonEntry:15:-1}"
       elif [[ $jsonEntry =~ \"_id\" ]]; then
         sbTuple=("none" "none" "none")
       fi
-      if [[ ! "${sbTuple[0]},${sbTuple[1]},${sbTuple[2]}" =~ none ]]; then
-        listOfBuildNames+=("${sbTuple[0]:13:-1}")
-        listOfBuildNums+=("${sbTuple[1]:11}")
-        listOfBuildResults+=("${sbTuple[2]:15:-1}")
+      if [[ ! "${sbTuple[0]},${sbTuple[1]}" =~ none ]]; then
+        listOfBuildNames+=("${sbTuple[0]}")
+        listOfBuildNums+=("${sbTuple[1]}")
+        if [[ "${sbTuple[2]}" == "none" ]]; then
+          # Fetch the build result from jenkins because trss doesn't have it yet.
+          jobNamePrefix=$(echo "${sbTuple[0]}" | cut -d- -f1)
+          jobName="${jobNamePrefix}/job/${sbTuple[0]}/${sbTuple[1]}"
+          buildData=$(wget -q -O - "https://ci.adoptium.net/job/build-scripts/job/jobs/job/${jobName}/api/xml")
+          if [[ "${buildData}" =~ \<result\>[A-Z]+\<\/result\> ]]; then
+            resultString="${buildData#*<result>}"
+            resultString="${resultString%</result>*}"
+            listOfBuildResults+=("${resultString}")
+          else
+            listOfBuildResults+=("UNKNOWN")
+          fi
+        else
+          listOfBuildResults+=("${sbTuple[2]}")
+        fi
+        
         shorterListOfBuilds+="${sbTuple[0]},"
-        sbTuple=("none" "none" "none")
+        sbTuple=("none" "none")
       fi
     done
 
@@ -326,7 +340,7 @@ identifyFailedBuildsInTimerPipelines() {
     triageThesePlatforms=","
     for p in "${!temurinPlatforms[@]}"
     do
-      if [[ $shorterListOfBuilds =~ .*\"buildName\"\:\"${jdkJenkinsJobVersion}\-${temurinPlatforms[p]}\-temurin\".* ]]; then
+      if [[ $shorterListOfBuilds =~ .*,${jdkJenkinsJobVersion}\-${temurinPlatforms[p]}\-temurin,.* ]]; then
         if [[ ${arrayOfAllJDKVersions[v]} -lt ${platformStart[p]} ]]; then
           errorLog "Error: Platform ${temurinPlatforms[p]} should not be built for ${jdkJenkinsJobVersion}. Will not triage."
           continue
@@ -396,6 +410,9 @@ buildFailureTriager() {
       for regexIndex in "${!arrayOfRegexes[@]}"; do
         # When a regex matches, store the id of the regex we matched against, and also the line of output that matched the regex.
         if [[ "$jobOutputLine" =~ ${arrayOfRegexes[regexIndex]} ]]; then
+          # If regex matched a Test_Job_Auto_Gen failure; ignore it. 
+          # These are rerun when they fail, and rarely cause build job failure.
+          [[ "$jobOutputLine" =~ Test_Job_Auto_Gen.#[0-9]+.completed\:.FAILURE ]] && continue 2
           arrayOfRegexsForFailedJobs+=("$regexIndex")
           arrayOfErrorLinesForFailedJobs+=("$jobOutputLine")
           if [[ ${arrayOfFailureSources[regexIndex]} = 0 ]]; then
@@ -453,9 +470,15 @@ generateOutputFile() {
             preventable="no"
           fi
           jobTriageOutput+="Preventable: ${preventable}\n"
-          jobTriageOutput+="\`\`\`\n"
-          jobTriageOutput+="${arrayOfErrorLinesForFailedJobs[failedJobIndex]}\n"
-          jobTriageOutput+="\`\`\`\n"
+          # Do not show output for suspected test failures.
+          # Test jobs sometimes fail in groups, so we block the output
+          # to prevent the triager mistakenly assuming there is only
+          # one test failure.
+          if [[ ${arrayOfFailureSources[regexID]} -ne 1 ]]; then
+            jobTriageOutput+="\`\`\`\n"
+            jobTriageOutput+="${arrayOfErrorLinesForFailedJobs[failedJobIndex]}\n"
+            jobTriageOutput+="\`\`\`\n"
+          fi
         fi
         jobTriageOutput+="\n"
         if [[ ${arrayOfFailureSources[regexID]} -eq 1 ]]; then

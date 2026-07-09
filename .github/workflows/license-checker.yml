@@ -27,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     name: License Headers 
     steps:
-    - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
     - name: Check License Header
-      uses: apache/skywalking-eyes@cd7b195c51fd3d6ad52afceb760719ddc6b3ee91 # v0.6.0
+      uses: apache/skywalking-eyes@61275cc80d0798a405cb070f7d3a8aaf7cf2c2c1 # v0.8.0

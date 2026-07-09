@@ -18,14 +18,6 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 source "$SCRIPT_DIR/../../sbin/common/constants.sh"
 source "$SCRIPT_DIR/../../sbin/common/downloaders.sh"
 
-if [[ "$JAVA_FEATURE_VERSION" -ge 21 ]]; then
-  # jdk-21+ uses "bundled" FreeType
-  export BUILD_ARGS="${BUILD_ARGS} --freetype-dir bundled"
-else
-  # Bundling our own freetype can cause problems, so we skip that on linux.
-  export BUILD_ARGS="${BUILD_ARGS} --skip-freetype"
-fi
-
 ## This affects Alpine docker images and also evaluation pipelines
 if [ "$(pwd | wc -c)" -gt 83 ]; then
   # Use /tmp for alpine in preference to $HOME as Alpine fails gpg operation if PWD > 83 characters
@@ -265,6 +257,14 @@ then
   free
   ps -fu jenkins
   echo "=== END OF ARM32 STATUS CHECK ==="
+fi
+
+# Disable PCH (precompiled-headers) for jdk-21+ Temurin builds, to ensure deterministic reproducible builds
+# ref: https://github.com/adoptium/temurin-build/issues/4401
+if [ "${VARIANT}" == "${BUILD_VARIANT_TEMURIN}" ] && [ "$JAVA_FEATURE_VERSION" -ge 21 ];
+then
+  echo "Disabling precompiled headers as this may introduce non-deterministic PCH gch binaries, especially if ASLR is enabled, see: https://gcc.gnu.org/onlinedocs/gcc/Precompiled-Headers.html and https://github.com/adoptium/temurin-build/issues/4401"
+  export CONFIGURE_ARGS_FOR_ANY_PLATFORM="${CONFIGURE_ARGS_FOR_ANY_PLATFORM} --disable-precompiled-headers"
 fi
 
 BOOT_JDK_VARIABLE="JDK${JDK_BOOT_VERSION}_BOOT_DIR"

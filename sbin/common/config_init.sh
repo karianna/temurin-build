@@ -74,6 +74,7 @@ JDK_PATH
 JRE_PATH
 TEST_IMAGE_PATH
 STATIC_LIBS_IMAGE_PATH
+JMODS_IMAGE_PATH
 JVM_VARIANT
 LOCAL_DEPENDENCY_CACHE_DIR
 MACOSX_CODESIGN_IDENTITY
@@ -106,6 +107,7 @@ TMP_SPACE_BUILD
 USE_ADOPTIUM_DEVKIT
 USE_JEP319_CERTS
 USE_SSH
+USER_DEVKIT_LOCATION
 USER_SUPPLIED_CONFIGURE_ARGS
 USER_SUPPLIED_MAKE_ARGS
 USER_OPENJDK_BUILD_ROOT_DIRECTORY
@@ -382,6 +384,9 @@ function parseConfigurationArguments() {
         "--use-adoptium-devkit")
         BUILD_CONFIG[USE_ADOPTIUM_DEVKIT]="$1"; shift;;
 
+        "--user-devkit-location")
+        BUILD_CONFIG[USER_DEVKIT_LOCATION]="$1"; shift;;
+
         "--local-dependency-cache-dir")
         BUILD_CONFIG[LOCAL_DEPENDENCY_CACHE_DIR]="$1"; shift;;
 
@@ -656,6 +661,7 @@ function configDefaults() {
 
   # Default to no Adoptium DevKit
   BUILD_CONFIG[USE_ADOPTIUM_DEVKIT]=""
+  BUILD_CONFIG[USER_DEVKIT_LOCATION]=""
   BUILD_CONFIG[ADOPTIUM_DEVKIT_LOCATION]=""
 
   # Default to no local dependency cache
